@@ -1,0 +1,9 @@
+[package]
+name = "rspwl-compositor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wl-sys = { path = "../wl-sys" }
+
+memoffset = "0.6"
