@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 use std::marker::PhantomPinned;
+use std::os::raw::c_int;
 use std::pin::Pin;
 use std::ptr;
 
@@ -42,37 +43,28 @@ macro_rules! container_of {
 }
 pub(crate) use container_of;
 
-// cool safe abstraction, but is is needed?
-// TODO: remove this if it is still not used in the future
-pub struct ListenerClosure {
-    wl_listener: wl::wl_listener,
-    f: Box<dyn Fn(*mut c_void) -> ()>,
-    _pin: PhantomPinned,
-}
-
-pub type ListenerFn = Pin<Box<ListenerClosure>>;
-
-impl ListenerClosure {
-    pub fn listen_signal(
-        signal: &mut wl::wl_signal,
-        f: Box<dyn Fn(*mut c_void) -> ()>,
-    ) -> ListenerFn {
-        let mut listener = Box::pin(ListenerClosure {
-            wl_listener: new_wl_listener(Some(listener_notify)),
-            f,
-            _pin: PhantomPinned::default(),
-        });
-
-        unsafe {
-            let mut_ref: Pin<&mut Self> = Pin::as_mut(&mut listener);
-            let listener = Pin::get_unchecked_mut(mut_ref);
-            signal_add(signal, &mut listener.wl_listener);
-        }
-
-        listener
+pub fn xdg_surface_for_each_surface<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()>(
+    xdg_surface: *mut wl::wlr_xdg_surface,
+    f: F,
+) {
+    struct IterData<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()> {
+        f: F,
     }
-}
-unsafe extern "C" fn listener_notify(wl_listener: *mut wl::wl_listener, data: *mut c_void) {
-    let listener = container_of!(ListenerClosure, wl_listener, wl_listener);
-    ((*listener).f)(data);
+    unsafe extern "C" fn do_damage<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()>(
+        surface: *mut wl::wlr_surface,
+        sx: c_int,
+        sy: c_int,
+        data: *mut c_void,
+    ) {
+        let data = &*(data as *const IterData<F>);
+        (data.f)(&mut *surface, sx, sy);
+    }
+    let mut data = IterData { f };
+    unsafe {
+        wl::wlr_xdg_surface_for_each_surface(
+            xdg_surface,
+            Some(do_damage::<F>),
+            &mut data as *mut IterData<F> as *mut c_void,
+        );
+    }
 }

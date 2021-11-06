@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use std::ffi::{CStr, c_void};
+use std::ffi::c_void;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
-use std::os::raw::c_int;
 use std::pin::Pin;
 use std::ptr;
 
@@ -20,7 +19,7 @@ pub struct Server {
     pub renderer: *mut wl::wlr_renderer,
 
     pub xdg_shell: *mut wl::wlr_xdg_shell,
-    pub nodes: HashMap<NodeId, Pin<Box<Node>>>,
+    pub views: HashMap<NodeId, Pin<Box<View>>>,
     pub mru_node: Vec<NodeId>,
 
     pub cursor: *mut wl::wlr_cursor,
@@ -56,7 +55,7 @@ impl Server {
     fn new_node_id(&mut self) -> NodeId {
         let candidate = self.next_node_id;
         for _ in 0..1000 {
-            if !self.nodes.contains_key(&candidate) {
+            if !self.views.contains_key(&candidate) {
                 self.next_node_id = candidate + 1;
                 return candidate;
             }
@@ -87,7 +86,7 @@ impl Drop for Output {
     }
 }
 
-pub struct Node {
+pub struct View {
     id: NodeId,
 
     xdg_surface: *mut wl::wlr_xdg_surface,
@@ -110,7 +109,7 @@ struct Point {
     y: f64,
 }
 
-impl Drop for Node {
+impl Drop for View {
     fn drop(&mut self) {
         unsafe {
             wl::wl_list_remove(&mut self.map.link);
@@ -176,7 +175,7 @@ unsafe fn begin_adventure() {
         renderer,
 
         xdg_shell,
-        nodes: HashMap::new(),
+        views: HashMap::new(),
         mru_node: Vec::new(),
 
         cursor,
@@ -240,53 +239,21 @@ unsafe fn begin_adventure() {
 
     SERVER_GLOBAL = &mut server;
 
-    println!("DO SOCKET");
     let socket = wl::wl_display_add_socket_auto(server.wl_display);
-    let sockcstr = CStr::from_ptr(socket);
-    println!("SOCKET {:?}", sockcstr);
     if socket.is_null() {
         wl::wlr_backend_destroy(server.backend);
     } else {
-        println!("DO START");
         if !wl::wlr_backend_start(server.backend) {
             wl::wlr_backend_destroy(server.backend);
             wl::wl_display_destroy(server.wl_display);
         } else {
-            //std::env::set_var("WAYLAND_DISPLAY", socket)
-
-            // TODO: should setup some nice wlr logging for Rust (to get the safest WLR logging EVER
-            //wl::wlr_log(WLR_INFO, "Running Wayland compositor on WAYLAND_DISPLAY=%s",
-            //        socket);
-            println!("RUN IT!");
+            debug!("Run display");
             wl::wl_display_run(server.wl_display);
 
             wl::wl_display_destroy_clients(server.wl_display);
             wl::wl_display_destroy(server.wl_display);
         }
     }
-
-    // TODO go thru, is all ok:
-
-    // server.cursor_motion.notify = server_cursor_motion;
-    // wl_signal_add(&server.cursor->events.motion, &server.cursor_motion);
-    // server.cursor_motion_absolute.notify = server_cursor_motion_absolute;
-    // wl_signal_add(&server.cursor->events.motion_absolute,
-    //         &server.cursor_motion_absolute);
-    // server.cursor_button.notify = server_cursor_button;
-    // wl_signal_add(&server.cursor->events.button, &server.cursor_button);
-    // server.cursor_axis.notify = server_cursor_axis;
-    // wl_signal_add(&server.cursor->events.axis, &server.cursor_axis);
-    // server.cursor_frame.notify = server_cursor_frame;
-    // wl_signal_add(&server.cursor->events.frame, &server.cursor_frame);
-    //
-    // server.new_input.notify = server_new_input;
-    // wl_signal_add(&server.backend->events.new_input, &server.new_input);
-    // server.request_cursor.notify = seat_request_cursor;
-    // wl_signal_add(&server.seat->events.request_set_cursor,
-    //         &server.request_cursor);
-    // server.request_set_selection.notify = seat_request_set_selection;
-    // wl_signal_add(&server.seat->events.request_set_selection,
-    //         &server.request_set_selection);
 
     SERVER_GLOBAL = ptr::null_mut();
 }
@@ -383,13 +350,14 @@ fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
 
 fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _: ()) {
     if xdg_surface.role != wl::wlr_xdg_surface_role_WLR_XDG_SURFACE_ROLE_TOPLEVEL {
-        println!("Skip non-toplevel");
+        warn!("Skip non-toplevel");
+        // TODO XXX handle non-toplevels
         return;
     }
 
     let id = server.new_node_id();
 
-    let mut node = Box::pin(Node {
+    let mut view = Box::pin(View {
         id,
         xdg_surface,
         map: new_wl_listener(Some(xdg_surface_map)),
@@ -406,7 +374,7 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
     });
 
     unsafe {
-        let x = node.as_mut().get_unchecked_mut();
+        let x = view.as_mut().get_unchecked_mut();
 
         let ev = &mut (*xdg_surface).events;
         let wev = &mut (*(*xdg_surface).surface).events;
@@ -421,15 +389,17 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         signal_add(&mut tev.request_resize, &mut x.request_resize);
     }
 
-    server.nodes.insert(id, node);
+    server.views.insert(id, view);
     server.mru_node.push(id);
+
+    invalidate_everything(server);
 }
 
 unsafe extern "C" fn damage_handle_frame(listener: *mut wl::wl_listener, _: *mut c_void) {
     let output = &mut *container_of!(Output, damage_frame, listener);
 
     if !(*output.wlr_output).enabled {
-        println!("XXX output disabled"); // TODO
+        info!("Output disabled");
         return;
     }
 
@@ -443,7 +413,7 @@ unsafe extern "C" fn damage_handle_frame(listener: *mut wl::wl_listener, _: *mut
     }
 
     if needs_frame {
-        render(output);
+        render(output, &mut damage_region);
         wl::wlr_output_commit(output.wlr_output);
     } else {
         wl::wlr_output_rollback(output.wlr_output);
@@ -451,58 +421,153 @@ unsafe extern "C" fn damage_handle_frame(listener: *mut wl::wl_listener, _: *mut
     wl::pixman_region32_fini(&mut damage_region);
 }
 
-struct RenderData {
-    server: *const Server,
-    output: *mut wl::wlr_output,
-    node: *const Node,
-    renderer: *mut wl::wlr_renderer,
-    when: *const wl::timespec,
+fn output_coords(server: &Server, output: &Output) -> Point {
+    let mut x = 0.0;
+    let mut y = 0.0;
+    unsafe {
+        wl::wlr_output_layout_output_coords(
+            server.output_layout,
+            output.wlr_output,
+            &mut x,
+            &mut y,
+        );
+    }
+    Point { x, y }
 }
 
-unsafe extern "C" fn render_surface(
+unsafe fn render_surface(
     surface: *mut wl::wlr_surface,
-    sx: c_int,
-    sy: c_int,
-    data: *mut c_void,
+    sx: i32,
+    sy: i32,
+    server: &Server,
+    output: &Output,
+    view: &View,
+    when: *const wl::timespec,
+    output_damage: *mut wl::pixman_region32,
 ) {
-    let rdata = &*(data as *const RenderData);
-    let node = &*rdata.node;
-    let server = &*rdata.server;
-
     let texture = wl::wlr_surface_get_texture(surface);
     if texture.is_null() {
         return;
     }
 
-    let mut ox = 0.0;
-    let mut oy = 0.0;
-    wl::wlr_output_layout_output_coords(server.output_layout, rdata.output, &mut ox, &mut oy);
-    ox += (node.x + sx) as f64;
-    oy += (node.y + sy) as f64;
+    let mut src_box = MaybeUninit::uninit();
+    wl::wlr_surface_get_buffer_source_box(surface, src_box.as_mut_ptr());
+    let src_box = src_box.assume_init();
 
-    let scale = (*rdata.output).scale as f64;
-    let viewbox = wl::wlr_box {
-        x: (ox * scale) as i32,
-        y: (oy * scale) as i32,
-        width: ((*surface).current.width as f64 * scale) as i32,
-        height: ((*surface).current.height as f64 * scale) as i32,
+    let Point {
+        x: mut ox,
+        y: mut oy,
+    } = output_coords(server, output);
+    ox += (view.x + sx) as f64;
+    oy += (view.y + sy) as f64;
+
+    let sw = (*surface).current.width;
+    let sh = (*surface).current.height;
+
+    let dst_box = wl::wlr_box {
+        x: ox as i32,
+        y: oy as i32,
+        width: sw,
+        height: sh,
     };
 
-    let mut matrix = [0f32; 9];
-    let transform = wl::wlr_output_transform_invert((*surface).current.transform);
-    wl::wlr_matrix_project_box(
-        matrix.as_mut_ptr(),
-        &viewbox,
-        transform,
-        0f32,
-        (*rdata.output).transform_matrix.as_ptr(),
+    let mut damage = MaybeUninit::uninit();
+    wl::pixman_region32_init(damage.as_mut_ptr());
+    let mut damage = damage.assume_init();
+    wl::pixman_region32_union_rect(
+        &mut damage,
+        &mut damage,
+        dst_box.x,
+        dst_box.y,
+        dst_box.width as u32,
+        dst_box.height as u32,
     );
-    wl::wlr_render_texture_with_matrix(rdata.renderer, texture, matrix.as_mut_ptr(), 1.0);
-    wl::wlr_surface_send_frame_done(surface, rdata.when);
+    // Get the output damage that overlaps the surface
+    wl::pixman_region32_intersect(&mut damage, &mut damage, output_damage);
+    if wl::pixman_region32_not_empty(&mut damage) != 0 {
+        let viewbox = scaled_box(output, ox, oy, sw as f64, sh as f64);
+
+        let mut matrix = [0f32; 9];
+        let surface_transform = wl::wlr_output_transform_invert((*surface).current.transform);
+        wl::wlr_matrix_project_box(
+            matrix.as_mut_ptr(),
+            &viewbox,
+            surface_transform,
+            0f32,
+            (*output.wlr_output).transform_matrix.as_ptr(),
+        );
+
+        let mut nrects = 0;
+        let rects = wl::pixman_region32_rectangles(&mut damage, &mut nrects);
+        let opacity = 1.0;
+        let mut ow = 0;
+        let mut oh = 0;
+
+        for idx in 0..nrects {
+            let rect = &*rects.offset(idx as isize);
+
+            // Here's what we do: Scissor the renderning and then just try to do the whole surface.
+            // This is what Sway does and it's probably right since those folks know how to use
+            // wlroots.
+            let mut scissor_box = wl::wlr_box {
+                x: rect.x1,
+                y: rect.y1,
+                width: rect.x2 - rect.x1,
+                height: rect.y2 - rect.y1,
+            };
+            info!("- RECT {:?}", scissor_box);
+
+            wl::wlr_output_transformed_resolution(output.wlr_output, &mut ow, &mut oh);
+            let transform = wl::wlr_output_transform_invert((*output.wlr_output).transform);
+            wl::wlr_box_transform(&mut scissor_box, &mut scissor_box, transform, ow, oh);
+
+            wl::wlr_renderer_scissor(server.renderer, &mut scissor_box);
+
+            // In addition to this, Sway would configure opengl texture scaling filter. We might
+            // want to do that as well.
+            wl::wlr_render_subtexture_with_matrix(
+                server.renderer,
+                texture,
+                &src_box,
+                matrix.as_mut_ptr(),
+                opacity,
+            );
+            //wl::wlr_render_texture_with_matrix(rdata.renderer, texture, matrix.as_mut_ptr(), 1.0);
+
+            // DEBUG
+            // let mut c = [1.0, 0.0, 0.0, 1.0];
+            // wl::wlr_render_rect(
+            //     rdata.renderer,
+            //     &mut wl::wlr_box {
+            //         x: scissor_box.x,
+            //         y: scissor_box.y,
+            //         width: 5,
+            //         height: scissor_box.height,
+            //     },
+            //     c.as_mut_ptr(),
+            //     (*output.wlr_output).transform_matrix.as_mut_ptr(),
+            // );
+            // wl::wlr_render_rect(
+            //     rdata.renderer,
+            //     &mut wl::wlr_box {
+            //         x: scissor_box.x,
+            //         y: scissor_box.y,
+            //         width: scissor_box.width,
+            //         height: 5,
+            //     },
+            //     c.as_mut_ptr(),
+            //     (*output.wlr_output).transform_matrix.as_mut_ptr(),
+            // );
+        }
+    }
+    wl::pixman_region32_fini(&mut damage);
+
+    wl::wlr_surface_send_frame_done(surface, when);
 }
-unsafe fn render(output: &mut Output) {
-    let server = server_ptr();
-    let renderer = (*server).renderer;
+
+unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
+    let server = &*server_ptr();
+    let renderer = server.renderer;
 
     let mut now = MaybeUninit::uninit();
     wl::clock_gettime(wl::CLOCK_MONOTONIC as i32, now.as_mut_ptr());
@@ -513,27 +578,32 @@ unsafe fn render(output: &mut Output) {
     wl::wlr_output_effective_resolution(output.wlr_output, &mut width, &mut height);
     wl::wlr_renderer_begin(renderer, width as u32, height as u32);
 
-    // TODO: Actually take the damage into account and don't just draw all the things. It's silly.
-    // TODO: Don't draw all nodes in all outputs. It's silly
-    // TODO: the rest
+    //let color = [0.3, 0.3, 0.3, 1.0];
+    //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
-    let color = [0.3, 0.3, 0.3, 1.0];
-    wl::wlr_renderer_clear(renderer, color.as_ptr());
-
-    for node in (*server).nodes.values().filter(|x| x.mapped) {
-        let mut rdata = RenderData {
-            server: &*server,
-            output: output.wlr_output,
-            node: &**node,
-            renderer,
-            when: &now,
-        };
-        wl::wlr_xdg_surface_for_each_surface(
-            node.xdg_surface,
-            Some(render_surface),
-            &mut rdata as *mut RenderData as *mut c_void,
-        );
+    info!("BEGIN RENDER");
+    for view in server.views.values().filter(|x| x.mapped) {
+        xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
+            info!("-surface");
+            render_surface(
+                s,
+                x,
+                y,
+                server,
+                output,
+                view,
+                &now,
+                damage
+            );
+        })
+        // wl::wlr_xdg_surface_for_each_surface(
+        //     view.xdg_surface,
+        //     Some(render_surface),
+        //     &mut rdata as *mut RenderData as *mut c_void,
+        // );
     }
+    wl::wlr_output_render_software_cursors(output.wlr_output, ptr::null_mut());
+    info!("END RENDER");
 
     wl::wlr_renderer_end(renderer);
 }
@@ -569,7 +639,7 @@ fn cursor_pos(server: &Server) -> Point {
     }
 }
 unsafe fn handle_cursor_move(server: &mut Server, time: u32) {
-    if let Some((_, surface, p)) = find_node(server, cursor_pos(server)) {
+    if let Some((_, surface, p)) = find_view(server, cursor_pos(server)) {
         // Enter is kind of wrong after the first time, but wlroots promises to disregard those so
         // no matter
         wl::wlr_seat_pointer_notify_enter(server.seat, surface, p.x, p.y);
@@ -592,12 +662,15 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
     if event.state == wl::wlr_button_state_WLR_BUTTON_RELEASED {
         // TODO release button here (resize drag, etc)
     } else {
-        if let Some((node, surface, _)) = find_node(server, cursor_pos(server)) {
-            let node_id = node.id;
-            let toplevel = node.xdg_surface;
+        if let Some((view, surface, _)) = find_view(server, cursor_pos(server)) {
+            let view_id = view.id;
+            let toplevel = view.xdg_surface;
+            info!("clicked view {}", view_id);
             unsafe {
-                focus(server, node_id, toplevel, surface);
+                focus(server, view_id, toplevel, surface);
             }
+        } else {
+            info!("clicked outside view");
         }
     }
 }
@@ -622,7 +695,7 @@ fn cursor_frame(server: &mut Server, _: &mut (), _: ()) {
 
 unsafe fn focus(
     server: &mut Server,
-    node_id: NodeId,
+    view_id: NodeId,
     toplevel: *mut wl::wlr_xdg_surface,
     surface: *mut wl::wlr_surface,
 ) {
@@ -637,17 +710,17 @@ unsafe fn focus(
     }
 
     let keyboard = &mut *wl::wlr_seat_get_keyboard(server.seat);
-    wl::wlr_xdg_toplevel_set_activated(toplevel, true);
+    wl::wlr_xdg_toplevel_set_activated(toplevel, false);
     wl::wlr_seat_keyboard_notify_enter(
         server.seat,
-        (*server.nodes.get(&node_id).unwrap().xdg_surface).surface, // TODO cleanup
+        surface,
         keyboard.keycodes.as_mut_ptr(),
         keyboard.num_keycodes,
         &mut keyboard.modifiers,
     );
 
-    remove_id(&mut server.mru_node, node_id);
-    server.mru_node.push(node_id);
+    remove_id(&mut server.mru_node, view_id);
+    server.mru_node.push(view_id);
 }
 
 fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: ()) {
@@ -696,8 +769,8 @@ fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: (
 
     // why wouldn't you have all the caps
     // TODO could still do this right
-    let mut caps = wl::wl_seat_capability_WL_SEAT_CAPABILITY_POINTER;
-    caps |= wl::wl_seat_capability_WL_SEAT_CAPABILITY_KEYBOARD;
+    let caps = wl::wl_seat_capability_WL_SEAT_CAPABILITY_POINTER
+        | wl::wl_seat_capability_WL_SEAT_CAPABILITY_KEYBOARD;
 
     //if server.keyboards.is_empty() {
     //}
@@ -785,22 +858,22 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
     }
 }
 
-fn find_node(
+fn find_view(
     server: &Server,
     pos: Point,
-) -> Option<(&Pin<Box<Node>>, *mut wl::wlr_surface, Point)> {
+) -> Option<(&Pin<Box<View>>, *mut wl::wlr_surface, Point)> {
     // TODO should do in mru order
-    server.nodes.values().find_map(|node| {
-        let sx = pos.x - node.x as f64;
-        let sy = pos.y - node.y as f64;
+    server.views.values().find_map(|view| {
+        let sx = pos.x - view.x as f64;
+        let sy = pos.y - view.y as f64;
         let mut sub = Point { x: 0.0, y: 0.0 };
         let surface = unsafe {
-            wl::wlr_xdg_surface_surface_at(node.xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
+            wl::wlr_xdg_surface_surface_at(view.xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
         };
         if surface.is_null() {
             None
         } else {
-            Some((node, surface, sub))
+            Some((view, surface, sub))
         }
     })
 }
@@ -813,51 +886,124 @@ fn invalidate_everything(server: &Server) {
     }
 }
 
-macro_rules! node {
+macro_rules! view {
     ($listener:ident, $field:tt) => {
-        &mut *container_of!(Node, $field, $listener)
+        &mut *container_of!(View, $field, $listener)
     };
 }
 
 unsafe extern "C" fn xdg_surface_map(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let node = node!(listener, map);
-    node.mapped = true;
+    let view = view!(listener, map);
+    view.mapped = true;
     focus(
         &mut *server_ptr(),
-        node.id,
-        node.xdg_surface,
-        (*node.xdg_surface).surface,
+        view.id,
+        view.xdg_surface,
+        (*view.xdg_surface).surface,
     );
-    // TODO: should damage view
+    damage_view(&*server_ptr(), view, true);
 }
 unsafe extern "C" fn xdg_surface_unmap(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let node = node!(listener, unmap);
-    node.mapped = false;
-    // TODO: should damage view
+    let view = view!(listener, unmap);
+    view.mapped = false;
+    // should do damage here
 }
-unsafe extern "C" fn xdg_surface_commit(_: *mut wl::wl_listener, _: *mut c_void) {
-    invalidate_everything(&*server_ptr());
+unsafe extern "C" fn xdg_surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let view = view!(listener, commit);
+    info!("commit");
+    damage_view(&*server_ptr(), view, false);
 }
 unsafe extern "C" fn xdg_surface_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let id = node!(listener, destroy).id;
+    let id = view!(listener, destroy).id;
     let server = &mut *server_ptr();
-    server.nodes.remove(&id);
+    server.views.remove(&id);
     remove_id(&mut server.mru_node, id);
 }
 fn remove_id(ids: &mut Vec<NodeId>, id: NodeId) {
     let mru_idx = ids
         .iter()
         .rposition(|x| *x == id)
-        .expect("BUG: node missing from mru vec");
+        .expect("BUG: view missing from mru vec");
     ids.remove(mru_idx);
 }
 
 unsafe extern "C" fn xdg_surface_request_move(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let id = node!(listener, request_move).id;
+    let id = view!(listener, request_move).id;
 
-    println!("node {} requested move but we don't care", id);
+    println!("view {} requested move but we don't care", id);
 }
 unsafe extern "C" fn xdg_surface_request_resize(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let id = node!(listener, request_resize).id;
-    println!("node {} requested resize but we don't care", id);
+    let id = view!(listener, request_resize).id;
+    println!("view {} requested resize but we don't care", id);
+}
+
+fn scaled_box(output: &Output, x: f64, y: f64, w: f64, h: f64) -> wl::wlr_box {
+    let scale = unsafe { (*output.wlr_output).scale as f64 };
+
+    wl::wlr_box {
+        x: (x * scale).round() as i32,
+        y: (y * scale).round() as i32,
+        width: (w * scale).round() as i32,
+        height: (h * scale).round() as i32,
+    }
+}
+
+fn damage_view(server: &Server, view: &mut View, full: bool) {
+    for output in server.outputs.iter() {
+        let o = output_coords(server, output);
+        xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
+            let ox = o.x + view.x as f64 + x as f64;
+            let oy = o.y + view.y as f64 + y as f64;
+            let sw = (*s).current.width;
+            let sh = (*s).current.width;
+            let mut area = scaled_box(output, ox, oy, sw as f64, sh as f64);
+
+            if full {
+                unsafe {
+                    wl::wlr_output_damage_add_box(output.damage, &mut area);
+                }
+            } else {
+                unsafe {
+                    if wl::pixman_region32_not_empty(&mut s.buffer_damage) != 0 {
+                        // figuring out the damage:
+                        // lets just do what sway wouild
+                        let scale = (*output.wlr_output).scale;
+
+                        let mut dmg = MaybeUninit::uninit();
+                        wl::pixman_region32_init(dmg.as_mut_ptr());
+                        let mut dmg = dmg.assume_init();
+
+                        wl::wlr_surface_get_effective_damage(s, &mut dmg);
+                        wl::wlr_region_scale(&mut dmg, &mut dmg, scale);
+                        if scale.ceil() as i32 > s.current.scale {
+                            wl::wlr_region_expand(
+                                &mut dmg,
+                                &mut dmg,
+                                scale.ceil() as i32 - s.current.scale,
+                            );
+                        }
+                        wl::pixman_region32_translate(&mut dmg, area.x, area.y);
+                        wl::wlr_output_damage_add(output.damage, &mut dmg);
+
+                        wl::pixman_region32_fini(&mut dmg);
+                    }
+                }
+                // if (pixman_region32_not_empty(&surface->buffer_damage)) {
+                // 	pixman_region32_t damage;
+                // 	pixman_region32_init(&damage);
+                // 	wlr_surface_get_effective_damage(surface, &damage);
+                // 	wlr_region_scale(&damage, &damage, output->wlr_output->scale);
+                // 	if (ceil(output->wlr_output->scale) > surface->current.scale) {
+                // 		// When scaling up a surface, it'll become blurry so we need to
+                // 		// expand the damage region
+                // 		wlr_region_expand(&damage, &damage,
+                // 			ceil(output->wlr_output->scale) - surface->current.scale);
+                // 	}
+                // 	pixman_region32_translate(&damage, box.x, box.y);
+                // 	wlr_output_damage_add(output->damage, &damage);
+                // 	pixman_region32_fini(&damage);
+                // }
+            }
+        });
+    }
 }

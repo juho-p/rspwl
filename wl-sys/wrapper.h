@@ -17,5 +17,6 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/region.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
