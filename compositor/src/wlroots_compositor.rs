@@ -1,5 +1,8 @@
+// unsafe {
+//     lets goooo
+
 use std::collections::HashMap;
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -97,16 +100,24 @@ pub struct View {
     destroy: wl::wl_listener,
     request_move: wl::wl_listener,
     request_resize: wl::wl_listener,
+    new_subsurface: wl::wl_listener,
+    new_popup: wl::wl_listener,
     mapped: bool,
     x: i32,
     y: i32,
+    children: Vec<Pin<Box<ViewChild>>>,
+    popups: Vec<Pin<Box<Popup>>>,
 
     _pin: PhantomPinned,
 }
 
-struct Point {
-    x: f64,
-    y: f64,
+impl View {
+    fn add_popup(&mut self, popup: *mut wl::wlr_xdg_popup) {
+        self.popups.push(Popup::new(self.id, popup));
+        unsafe {
+            self.children.push(ViewChild::new(self.id, (*(*popup).base).surface));
+        }
+    }
 }
 
 impl Drop for View {
@@ -118,8 +129,94 @@ impl Drop for View {
             wl::wl_list_remove(&mut self.destroy.link);
             wl::wl_list_remove(&mut self.request_move.link);
             wl::wl_list_remove(&mut self.request_resize.link);
+            wl::wl_list_remove(&mut self.new_subsurface.link);
+            wl::wl_list_remove(&mut self.new_popup.link);
         }
     }
+}
+
+struct ViewChild {
+    destroy: wl::wl_listener,
+    commit: wl::wl_listener,
+    new_subsurface: wl::wl_listener,
+
+    surface: *mut wl::wlr_surface,
+
+    parent_id: NodeId,
+    _pin: PhantomPinned,
+}
+impl ViewChild {
+    fn new(parent_id: NodeId, surface: *mut wl::wlr_surface) -> Pin<Box<Self>> {
+        let mut child = Box::pin(ViewChild {
+            parent_id,
+            surface,
+            destroy: new_wl_listener(Some(child_destroy)),
+            commit: new_wl_listener(Some(child_commit)),
+            new_subsurface: new_wl_listener(Some(child_new_subsurface)),
+
+            _pin: PhantomPinned,
+        });
+
+        unsafe {
+            let surface = &mut*surface;
+            let x = child.as_mut().get_unchecked_mut();
+            signal_add(&mut surface.events.destroy, &mut x.destroy);
+            signal_add(&mut surface.events.commit, &mut x.commit);
+            signal_add(&mut surface.events.new_subsurface, &mut x.new_subsurface);
+        }
+
+        child
+    }
+}
+impl Drop for ViewChild {
+    fn drop(&mut self) {
+        unsafe {
+            wl::wl_list_remove(&mut self.destroy.link);
+            wl::wl_list_remove(&mut self.commit.link);
+        }
+    }
+}
+struct Popup {
+    destroy: wl::wl_listener,
+    new_popup: wl::wl_listener,
+    popup: *mut wl::wlr_xdg_popup,
+
+    parent_id: NodeId,
+    _pin: PhantomPinned,
+}
+impl Popup {
+    fn new(parent_id: NodeId, xdg_popup: *mut wl::wlr_xdg_popup) -> Pin<Box<Self>> {
+        let mut popup = Box::pin(Popup {
+            parent_id,
+            popup: xdg_popup,
+            destroy: new_wl_listener(Some(popup_destroy)),
+            new_popup: new_wl_listener(Some(popup_new_popup)),
+
+            _pin: PhantomPinned,
+        });
+
+        unsafe {
+            let xdg_surface = &mut*(*xdg_popup).base;
+            let x = popup.as_mut().get_unchecked_mut();
+            signal_add(&mut xdg_surface.events.destroy, &mut x.destroy);
+            signal_add(&mut xdg_surface.events.new_popup, &mut x.new_popup);
+        }
+
+        popup
+    }
+}
+impl Drop for Popup {
+    fn drop(&mut self) {
+        unsafe {
+            wl::wl_list_remove(&mut self.destroy.link);
+            wl::wl_list_remove(&mut self.new_popup.link);
+        }
+    }
+}
+
+struct Point {
+    x: f64,
+    y: f64,
 }
 
 pub struct Keyboard {
@@ -350,8 +447,7 @@ fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
 
 fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _: ()) {
     if xdg_surface.role != wl::wlr_xdg_surface_role_WLR_XDG_SURFACE_ROLE_TOPLEVEL {
-        warn!("Skip non-toplevel");
-        // TODO XXX handle non-toplevels
+        info!("xdg-shell popup");
         return;
     }
 
@@ -362,13 +458,17 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         xdg_surface,
         map: new_wl_listener(Some(xdg_surface_map)),
         unmap: new_wl_listener(Some(xdg_surface_unmap)),
-        commit: new_wl_listener(Some(xdg_surface_commit)),
+        commit: new_wl_listener(Some(surface_commit)),
         destroy: new_wl_listener(Some(xdg_surface_destroy)),
         request_move: new_wl_listener(Some(xdg_surface_request_move)),
         request_resize: new_wl_listener(Some(xdg_surface_request_resize)),
+        new_subsurface: new_wl_listener(Some(new_subsurface)),
+        new_popup: new_wl_listener(Some(new_popup)),
         mapped: false,
         x: 70,
         y: 5,
+        children: Vec::new(),
+        popups: Vec::new(),
 
         _pin: PhantomPinned,
     });
@@ -376,17 +476,23 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
     unsafe {
         let x = view.as_mut().get_unchecked_mut();
 
-        let ev = &mut (*xdg_surface).events;
-        let wev = &mut (*(*xdg_surface).surface).events;
-        let toplevel = (*xdg_surface).__bindgen_anon_1.toplevel; // very cool, bindgen, thanks
-        let tev = &mut (*toplevel).events;
+        let toplevel = &mut *xdg_surface.__bindgen_anon_1.toplevel;
+        let wev = &mut (*xdg_surface.surface).events;
+        let tev = &mut toplevel.events;
 
-        signal_add(&mut ev.map, &mut x.map);
-        signal_add(&mut ev.unmap, &mut x.unmap);
+        info!("xdg-shell toplevel {:?}: {:?}", CStr::from_ptr(toplevel.app_id), CStr::from_ptr(toplevel.title));
+
+        // TODO XXX ?? keep pinging more later
+        wl::wlr_xdg_surface_ping(xdg_surface);
+
+        signal_add(&mut xdg_surface.events.map, &mut x.map);
+        signal_add(&mut xdg_surface.events.unmap, &mut x.unmap);
         signal_add(&mut wev.commit, &mut x.commit);
-        signal_add(&mut ev.destroy, &mut x.destroy);
+        signal_add(&mut xdg_surface.events.destroy, &mut x.destroy);
         signal_add(&mut tev.request_move, &mut x.request_move);
         signal_add(&mut tev.request_resize, &mut x.request_resize);
+        signal_add(&mut wev.new_subsurface, &mut x.new_subsurface);
+        signal_add(&mut xdg_surface.events.new_popup, &mut x.new_popup);
     }
 
     server.views.insert(id, view);
@@ -515,7 +621,7 @@ unsafe fn render_surface(
                 width: rect.x2 - rect.x1,
                 height: rect.y2 - rect.y1,
             };
-            info!("- RECT {:?}", scissor_box);
+            debug!("- RECT {:?}", scissor_box);
 
             wl::wlr_output_transformed_resolution(output.wlr_output, &mut ow, &mut oh);
             let transform = wl::wlr_output_transform_invert((*output.wlr_output).transform);
@@ -581,10 +687,10 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     //let color = [0.3, 0.3, 0.3, 1.0];
     //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
-    info!("BEGIN RENDER");
+    debug!("BEGIN RENDER");
     for view in server.views.values().filter(|x| x.mapped) {
         xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
-            info!("-surface");
+            debug!("-surface");
             render_surface(
                 s,
                 x,
@@ -603,7 +709,7 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
         // );
     }
     wl::wlr_output_render_software_cursors(output.wlr_output, ptr::null_mut());
-    info!("END RENDER");
+    debug!("END RENDER");
 
     wl::wlr_renderer_end(renderer);
 }
@@ -908,10 +1014,27 @@ unsafe extern "C" fn xdg_surface_unmap(listener: *mut wl::wl_listener, _: *mut c
     view.mapped = false;
     // should do damage here
 }
-unsafe extern "C" fn xdg_surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
+unsafe extern "C" fn surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
     let view = view!(listener, commit);
     info!("commit");
     damage_view(&*server_ptr(), view, false);
+}
+unsafe extern "C" fn new_subsurface(listener: *mut wl::wl_listener, data: *mut c_void) {
+    let view = view!(listener, new_subsurface);
+    info!("New subsurface");
+
+    let subsurface = data as *mut wl::wlr_subsurface;
+
+    let id = view.id;
+    view.children.push(ViewChild::new(id, (*subsurface).surface));
+}
+unsafe extern "C" fn new_popup(listener: *mut wl::wl_listener, data: *mut c_void) {
+    let view = view!(listener, new_popup);
+    info!("New popup");
+
+    let popup = data as *mut wl::wlr_xdg_popup;
+
+    view.add_popup(popup);
 }
 unsafe extern "C" fn xdg_surface_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
     let id = view!(listener, destroy).id;
@@ -935,6 +1058,59 @@ unsafe extern "C" fn xdg_surface_request_move(listener: *mut wl::wl_listener, _:
 unsafe extern "C" fn xdg_surface_request_resize(listener: *mut wl::wl_listener, _: *mut c_void) {
     let id = view!(listener, request_resize).id;
     println!("view {} requested resize but we don't care", id);
+}
+
+unsafe extern "C" fn child_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let child = &*container_of!(ViewChild, destroy, listener);
+    if let Some(view) = (*server_ptr()).views.get_mut(&child.parent_id) {
+        if let Some(index) = view.children.iter().position(|x| x.surface == child.surface) {
+            view.as_mut().get_unchecked_mut().children.swap_remove(index);
+        } else {
+            warn!("subsurface_destroy: Child is missing");
+        }
+    } else {
+        warn!("subsurface_destroy: View is missing");
+    }
+}
+unsafe extern "C" fn child_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let _child = &*container_of!(ViewChild, commit, listener);
+    // TODO bad XXX
+    warn!("Invalidate all for nothing");
+    invalidate_everything(&*server_ptr());
+}
+unsafe extern "C" fn child_new_subsurface(listener: *mut wl::wl_listener, data: *mut c_void) {
+    // TODO should unify this surface handling stuff
+    let subsurface = data as *mut wl::wlr_subsurface;
+    let child = &*container_of!(ViewChild, new_subsurface, listener);
+    if let Some(view) = (*server_ptr()).views.get_mut(&child.parent_id) {
+        view.as_mut().get_unchecked_mut().children.push(ViewChild::new(child.parent_id, (*subsurface).surface));
+    } else {
+        warn!("subsurface_new_subsurface: View is missing");
+    }
+}
+
+unsafe extern "C" fn popup_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let popup = &*container_of!(Popup, destroy, listener);
+    info!("Destroy popup");
+    if let Some(view) = (*server_ptr()).views.get_mut(&popup.parent_id) {
+        if let Some(index) = view.popups.iter().position(|x| x.popup == popup.popup) {
+            view.as_mut().get_unchecked_mut().popups.swap_remove(index);
+        } else {
+            warn!("subsurface_destroy: Child is missing");
+        }
+    } else {
+        warn!("subsurface_destroy: View is missing");
+    }
+}
+unsafe extern "C" fn popup_new_popup(listener: *mut wl::wl_listener, data: *mut c_void) {
+    let new_xdg_popup = data as *mut wl::wlr_xdg_popup;
+    info!("New popup  from popup");
+    let popup = &*container_of!(Popup, new_popup, listener);
+    if let Some(view) = (*server_ptr()).views.get_mut(&popup.parent_id) {
+        view.as_mut().get_unchecked_mut().add_popup(new_xdg_popup);
+    } else {
+        warn!("popup_new_popup: View is missing");
+    }
 }
 
 fn scaled_box(output: &Output, x: f64, y: f64, w: f64, h: f64) -> wl::wlr_box {

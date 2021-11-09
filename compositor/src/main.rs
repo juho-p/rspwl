@@ -7,7 +7,7 @@ extern crate log;
 fn main() {
     // TODO rust logger overlaps with wlr logger, FIX IT
     pretty_env_logger::formatted_builder()
-        .parse_filters("debug")
+        .parse_filters("info")
         .init();
 
     println!("Hello, world!");

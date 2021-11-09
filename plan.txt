@@ -1,19 +1,18 @@
 basics
-- more correct damage tracking & render
-    - commit
-    - map
-    - unmap
-    - destroy
-- fix surface scale?
 - subsurfaces
-    - damage: subsurface create
+    - map -> configure events
+    - unmap -> unconfigure events
+    - events: for all surfaces
 - logging & cleanup prints
 - clear TODOs
 - code cleanup & restructure
 - make sure input devices & outputs & etc. are cleaned up properly on unplug
-- output damage destrot -> drop output
-- similar as sway output "schedule frame" ?
-- wrapper for region32
+- output damage destroy -> drop output?
+- wrapper for region32?
+- commonize xdg_surface
+    - map -> damage
+    - unmap -> damage
+    - new_popup -> blah
 
 later
 - xdg surfaces: configure & other handling
@@ -31,3 +30,8 @@ later
 - layer-shell
 - other protocols
 - set WAYLAND_DISPLAY to started applications
+- limit render time? similar as sway output "schedule frame" ?
+- handle wayland and xdg protocols better
+    - wlr_surface_send_enter
+    - could handle requests & stuff only when mapped (signal add on map, signal remove on unmap)
+- popups and subsurfaces are error prone. See if they REALLY work. Or refactor to be less scary.
