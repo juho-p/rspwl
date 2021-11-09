@@ -2,7 +2,7 @@
 //     lets goooo
 
 use std::collections::HashMap;
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr};
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -115,7 +115,8 @@ impl View {
     fn add_popup(&mut self, popup: *mut wl::wlr_xdg_popup) {
         self.popups.push(Popup::new(self.id, popup));
         unsafe {
-            self.children.push(ViewChild::new(self.id, (*(*popup).base).surface));
+            self.children
+                .push(ViewChild::new(self.id, (*(*popup).base).surface));
         }
     }
 }
@@ -158,7 +159,7 @@ impl ViewChild {
         });
 
         unsafe {
-            let surface = &mut*surface;
+            let surface = &mut *surface;
             let x = child.as_mut().get_unchecked_mut();
             signal_add(&mut surface.events.destroy, &mut x.destroy);
             signal_add(&mut surface.events.commit, &mut x.commit);
@@ -196,7 +197,7 @@ impl Popup {
         });
 
         unsafe {
-            let xdg_surface = &mut*(*xdg_popup).base;
+            let xdg_surface = &mut *(*xdg_popup).base;
             let x = popup.as_mut().get_unchecked_mut();
             signal_add(&mut xdg_surface.events.destroy, &mut x.destroy);
             signal_add(&mut xdg_surface.events.new_popup, &mut x.new_popup);
@@ -480,7 +481,11 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         let wev = &mut (*xdg_surface.surface).events;
         let tev = &mut toplevel.events;
 
-        info!("xdg-shell toplevel {:?}: {:?}", CStr::from_ptr(toplevel.app_id), CStr::from_ptr(toplevel.title));
+        info!(
+            "xdg-shell toplevel {:?}: {:?}",
+            CStr::from_ptr(toplevel.app_id),
+            CStr::from_ptr(toplevel.title)
+        );
 
         // TODO XXX ?? keep pinging more later
         wl::wlr_xdg_surface_ping(xdg_surface);
@@ -688,19 +693,11 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
     debug!("BEGIN RENDER");
+    // TODO mru order
     for view in server.views.values().filter(|x| x.mapped) {
         xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
             debug!("-surface");
-            render_surface(
-                s,
-                x,
-                y,
-                server,
-                output,
-                view,
-                &now,
-                damage
-            );
+            render_surface(s, x, y, server, output, view, &now, damage);
         })
         // wl::wlr_xdg_surface_for_each_surface(
         //     view.xdg_surface,
@@ -708,6 +705,7 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
         //     &mut rdata as *mut RenderData as *mut c_void,
         // );
     }
+    wl::wlr_renderer_scissor(server.renderer, ptr::null_mut());
     wl::wlr_output_render_software_cursors(output.wlr_output, ptr::null_mut());
     debug!("END RENDER");
 
@@ -757,6 +755,8 @@ unsafe fn handle_cursor_move(server: &mut Server, time: u32) {
             cstring!("left_ptr"),
             server.cursor,
         );
+
+        wl::wlr_seat_pointer_clear_focus(server.seat);
     }
 }
 
@@ -816,7 +816,7 @@ unsafe fn focus(
     }
 
     let keyboard = &mut *wl::wlr_seat_get_keyboard(server.seat);
-    wl::wlr_xdg_toplevel_set_activated(toplevel, false);
+    wl::wlr_xdg_toplevel_set_activated(toplevel, true);
     wl::wlr_seat_keyboard_notify_enter(
         server.seat,
         surface,
@@ -835,6 +835,7 @@ fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: (
     if device.type_ == wl::wlr_input_device_type_WLR_INPUT_DEVICE_KEYBOARD {
         let id = (1..255).find(|i| server.keyboards.iter().all(|x| x.id != *i));
         if let Some(id) = id {
+            // TODO keyboard destroy not handled??
             let mut keyboard = Box::pin(Keyboard {
                 device,
                 modifiers: Listener::new(handle_modifiers, id),
@@ -848,8 +849,12 @@ fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: (
                 listen_server_signal(&mut events.modifiers, &mut kb.modifiers);
                 listen_server_signal(&mut events.key, &mut kb.key);
 
-                let context = wl::xkb_context_new(0);
-                let keymap = wl::xkb_keymap_new_from_names(context, ptr::null(), 0);
+                let context = wl::xkb_context_new(wl::xkb_context_flags_XKB_CONTEXT_NO_FLAGS);
+                let keymap = wl::xkb_keymap_new_from_names(
+                    context,
+                    ptr::null(),
+                    wl::xkb_keymap_compile_flags_XKB_KEYMAP_COMPILE_NO_FLAGS,
+                );
 
                 // TODO: these should actually come from some kind of keyboard settings (and not
                 // hard coded)
@@ -863,6 +868,7 @@ fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: (
                 wl::wlr_seat_set_keyboard(server.seat, device);
             }
 
+            info!("Add keyboard");
             server.keyboards.push(keyboard);
         } else {
             eprintln!("Can't add keyboard. WHY DO YOU HAVE SO MANY KEYBOARDS?");
@@ -896,12 +902,15 @@ fn handle_request_cursor(
     unsafe {
         let focused_client = (*server.seat).pointer_state.focused_client;
         if focused_client == event.seat_client {
+            info!("Focused client requests cursor");
             wl::wlr_cursor_set_surface(
                 server.cursor,
                 event.surface,
                 event.hotspot_x,
                 event.hotspot_y,
             );
+        } else {
+            info!("Unfocused client TRIED to request cursor");
         }
     }
 }
@@ -952,7 +961,7 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
 
         // NOTE: when not handled by some shortcut system, pass it to seat
         unsafe {
-            println!("Handle key");
+            info!("Handle key");
             wl::wlr_seat_set_keyboard(server.seat, keyboard.device);
             wl::wlr_seat_keyboard_notify_key(
                 server.seat,
@@ -1017,7 +1026,7 @@ unsafe extern "C" fn xdg_surface_unmap(listener: *mut wl::wl_listener, _: *mut c
 unsafe extern "C" fn surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
     let view = view!(listener, commit);
     info!("commit");
-    damage_view(&*server_ptr(), view, false);
+    damage_view(&*server_ptr(), view, true);
 }
 unsafe extern "C" fn new_subsurface(listener: *mut wl::wl_listener, data: *mut c_void) {
     let view = view!(listener, new_subsurface);
@@ -1026,7 +1035,8 @@ unsafe extern "C" fn new_subsurface(listener: *mut wl::wl_listener, data: *mut c
     let subsurface = data as *mut wl::wlr_subsurface;
 
     let id = view.id;
-    view.children.push(ViewChild::new(id, (*subsurface).surface));
+    view.children
+        .push(ViewChild::new(id, (*subsurface).surface));
 }
 unsafe extern "C" fn new_popup(listener: *mut wl::wl_listener, data: *mut c_void) {
     let view = view!(listener, new_popup);
@@ -1063,8 +1073,15 @@ unsafe extern "C" fn xdg_surface_request_resize(listener: *mut wl::wl_listener, 
 unsafe extern "C" fn child_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
     let child = &*container_of!(ViewChild, destroy, listener);
     if let Some(view) = (*server_ptr()).views.get_mut(&child.parent_id) {
-        if let Some(index) = view.children.iter().position(|x| x.surface == child.surface) {
-            view.as_mut().get_unchecked_mut().children.swap_remove(index);
+        if let Some(index) = view
+            .children
+            .iter()
+            .position(|x| x.surface == child.surface)
+        {
+            view.as_mut()
+                .get_unchecked_mut()
+                .children
+                .swap_remove(index);
         } else {
             warn!("subsurface_destroy: Child is missing");
         }
@@ -1083,7 +1100,10 @@ unsafe extern "C" fn child_new_subsurface(listener: *mut wl::wl_listener, data: 
     let subsurface = data as *mut wl::wlr_subsurface;
     let child = &*container_of!(ViewChild, new_subsurface, listener);
     if let Some(view) = (*server_ptr()).views.get_mut(&child.parent_id) {
-        view.as_mut().get_unchecked_mut().children.push(ViewChild::new(child.parent_id, (*subsurface).surface));
+        view.as_mut()
+            .get_unchecked_mut()
+            .children
+            .push(ViewChild::new(child.parent_id, (*subsurface).surface));
     } else {
         warn!("subsurface_new_subsurface: View is missing");
     }
@@ -1130,56 +1150,45 @@ fn damage_view(server: &Server, view: &mut View, full: bool) {
         xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
             let ox = o.x + view.x as f64 + x as f64;
             let oy = o.y + view.y as f64 + y as f64;
-            let sw = (*s).current.width;
-            let sh = (*s).current.width;
-            let mut area = scaled_box(output, ox, oy, sw as f64, sh as f64);
-
-            if full {
-                unsafe {
-                    wl::wlr_output_damage_add_box(output.damage, &mut area);
-                }
-            } else {
-                unsafe {
-                    if wl::pixman_region32_not_empty(&mut s.buffer_damage) != 0 {
-                        // figuring out the damage:
-                        // lets just do what sway wouild
-                        let scale = (*output.wlr_output).scale;
-
-                        let mut dmg = MaybeUninit::uninit();
-                        wl::pixman_region32_init(dmg.as_mut_ptr());
-                        let mut dmg = dmg.assume_init();
-
-                        wl::wlr_surface_get_effective_damage(s, &mut dmg);
-                        wl::wlr_region_scale(&mut dmg, &mut dmg, scale);
-                        if scale.ceil() as i32 > s.current.scale {
-                            wl::wlr_region_expand(
-                                &mut dmg,
-                                &mut dmg,
-                                scale.ceil() as i32 - s.current.scale,
-                            );
-                        }
-                        wl::pixman_region32_translate(&mut dmg, area.x, area.y);
-                        wl::wlr_output_damage_add(output.damage, &mut dmg);
-
-                        wl::pixman_region32_fini(&mut dmg);
-                    }
-                }
-                // if (pixman_region32_not_empty(&surface->buffer_damage)) {
-                // 	pixman_region32_t damage;
-                // 	pixman_region32_init(&damage);
-                // 	wlr_surface_get_effective_damage(surface, &damage);
-                // 	wlr_region_scale(&damage, &damage, output->wlr_output->scale);
-                // 	if (ceil(output->wlr_output->scale) > surface->current.scale) {
-                // 		// When scaling up a surface, it'll become blurry so we need to
-                // 		// expand the damage region
-                // 		wlr_region_expand(&damage, &damage,
-                // 			ceil(output->wlr_output->scale) - surface->current.scale);
-                // 	}
-                // 	pixman_region32_translate(&damage, box.x, box.y);
-                // 	wlr_output_damage_add(output->damage, &damage);
-                // 	pixman_region32_fini(&damage);
-                // }
-            }
+            damage_surface_at(output, s, ox, oy, full);
         });
+    }
+}
+
+fn damage_surface_at(output: &Output, surface: &mut wl::wlr_surface, output_x: f64, output_y: f64, full: bool) {
+    let sw = surface.current.width;
+    let sh = surface.current.width;
+    let mut area = scaled_box(output, output_x, output_y, sw as f64, sh as f64);
+
+    if full {
+        unsafe {
+            wl::wlr_output_damage_add_box(output.damage, &mut area);
+        }
+    } else {
+        unsafe {
+            if wl::pixman_region32_not_empty(&mut surface.buffer_damage) != 0 {
+                // figuring out the damage:
+                // lets just do what sway wouild
+                let scale = (*output.wlr_output).scale;
+
+                let mut dmg = MaybeUninit::uninit();
+                wl::pixman_region32_init(dmg.as_mut_ptr());
+                let mut dmg = dmg.assume_init();
+
+                wl::wlr_surface_get_effective_damage(surface, &mut dmg);
+                wl::wlr_region_scale(&mut dmg, &mut dmg, scale);
+                if scale.ceil() as i32 > surface.current.scale {
+                    wl::wlr_region_expand(
+                        &mut dmg,
+                        &mut dmg,
+                        scale.ceil() as i32 - surface.current.scale,
+                        );
+                }
+                wl::pixman_region32_translate(&mut dmg, area.x, area.y);
+                wl::wlr_output_damage_add(output.damage, &mut dmg);
+
+                wl::pixman_region32_fini(&mut dmg);
+            }
+        }
     }
 }
