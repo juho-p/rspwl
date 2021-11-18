@@ -12,5 +12,5 @@ fn main() {
 
     println!("Hello, world!");
 
-    wlroots_compositor::run_server();
+    wlroots_compositor::runner::run_server();
 }
