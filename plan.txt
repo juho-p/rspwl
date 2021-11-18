@@ -1,21 +1,4 @@
-basics
-- subsurfaces
-    - map -> configure events
-    - unmap -> unconfigure events
-    - events: for all surfaces
-- logging & cleanup prints
-- clear TODOs
-- code cleanup & restructure
-- make sure input devices & outputs & etc. are cleaned up properly on unplug
-- output damage destroy -> drop output?
-- wrapper for region32?
-- commonize xdg_surface
-    - map -> damage
-    - unmap -> damage
-    - new_popup -> blah
-
-later
-- reduce the amount of unsafe %!$¤@
+- re-read wayland book (especially about the xdg-shell)
 - xdg surfaces: configure & other handling
 - floating window resize & move (mod key)
 - keyboard handler
@@ -37,3 +20,11 @@ later
     - could handle requests & stuff only when mapped (signal add on map, signal remove on unmap)
 - scaling a mystery. bunch of code but does it really work?
 - start to understand wlroots input handling: https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html
+
+boring stuff; remember to do at some point
+- logging & cleanup prints
+- clear TODOs
+- make sure input devices & outputs & etc. are cleaned up properly on unplug
+- output damage destroy -> drop output?
+- wrapper for region32?
+- reduce the amount of unsafe %!$¤@

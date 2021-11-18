@@ -93,12 +93,13 @@ impl Server {
     }
 
     fn remove_from_mru(&mut self, id: NodeId) {
-        let mru_idx = self.mru_node
+        let mru_idx = self
+            .mru_node
             .iter()
             .rposition(|x| *x == id)
             .expect("BUG: view missing from mru vec");
         self.mru_node.remove(mru_idx);
-}
+    }
 }
 
 pub struct Output {
@@ -177,7 +178,10 @@ pub struct View {
 }
 
 impl View {
-    pub unsafe fn from_xdg_toplevel_surface(id: NodeId, xdg_surface: *mut wl::wlr_xdg_surface) -> Pin<Box<Self>> {
+    pub unsafe fn from_xdg_toplevel_surface(
+        id: NodeId,
+        xdg_surface: *mut wl::wlr_xdg_surface,
+    ) -> Pin<Box<Self>> {
         let mut view = Box::pin(View {
             id,
             shell_surface: ShellView::Empty,
@@ -255,7 +259,12 @@ pub struct XdgSurface {
 }
 
 impl XdgSurface {
-    fn new(parent: *mut View, xdg_surface: *mut wl::wlr_xdg_surface, wl_surface: *mut wl::wlr_surface, kind: SurfaceBehavior) -> Self {
+    fn new(
+        parent: *mut View,
+        xdg_surface: *mut wl::wlr_xdg_surface,
+        wl_surface: *mut wl::wlr_surface,
+        kind: SurfaceBehavior,
+    ) -> Self {
         XdgSurface {
             surface: Surface::new(parent, wl_surface, kind),
             mapped: false,
@@ -314,12 +323,17 @@ unsafe extern "C" fn xdg_surface_new_popup(listener: *mut wl::wl_listener, data:
     let xdg_surface = &mut *popup.base;
     let surface = xdg_surface.surface;
 
-    view.children.push(ViewChild::new_popup(XdgSurface::new(it.surface.view, xdg_surface, surface, SurfaceBehavior::Child)));
+    view.children.push(ViewChild::new_popup(XdgSurface::new(
+        it.surface.view,
+        xdg_surface,
+        surface,
+        SurfaceBehavior::Child,
+    )));
 }
 
 pub enum SurfaceBehavior {
     Toplevel,
-    Child
+    Child,
 }
 pub struct Surface {
     view: *mut View,
@@ -343,7 +357,7 @@ impl Surface {
     }
 
     unsafe fn configure_listeners(&mut self) {
-        let x = &mut*self.surface;
+        let x = &mut *self.surface;
         signal_add(&mut x.events.commit, &mut self.commit);
         signal_add(&mut x.events.destroy, &mut self.destroy);
         signal_add(&mut x.events.new_subsurface, &mut self.new_subsurface);
@@ -372,6 +386,7 @@ unsafe extern "C" fn surface_destroy(listener: *mut wl::wl_listener, _: *mut c_v
     match it.destroy_behaviour {
         SurfaceBehavior::Toplevel => {
             let server = &mut *server_ptr();
+            info!("Top level surface destroyed");
             server.remove_view(view.id);
         }
         SurfaceBehavior::Child => {
@@ -393,7 +408,11 @@ unsafe extern "C" fn surface_new_subsurface(listener: *mut wl::wl_listener, data
     let subsurface = data as *mut wl::wlr_subsurface;
     let surface = (*subsurface).surface;
 
-    view.children.push(ViewChild::new_subsurface(Surface::new(it.view, surface, SurfaceBehavior::Child)));
+    view.children.push(ViewChild::new_subsurface(Surface::new(
+        it.view,
+        surface,
+        SurfaceBehavior::Child,
+    )));
 }
 
 enum PopupOrSubsurface {
@@ -414,7 +433,8 @@ impl ViewChild {
             child: PopupOrSubsurface::Subsurface(surface),
             surface: wl_surface,
             _pin: PhantomPinned,
-        }.configure()
+        }
+        .configure()
     }
     fn new_popup(xdgsurface: XdgSurface) -> Pin<Box<Self>> {
         let surface = xdgsurface.surface.surface;
@@ -422,7 +442,8 @@ impl ViewChild {
             child: PopupOrSubsurface::Popup(xdgsurface),
             surface,
             _pin: PhantomPinned,
-        }.configure()
+        }
+        .configure()
     }
     fn configure(self) -> Pin<Box<Self>> {
         let mut x = Box::pin(self);
@@ -454,7 +475,13 @@ fn damage_view(server: &Server, view: &mut View, full: bool) {
     }
 }
 
-fn damage_surface_at(output: &Output, surface: &mut wl::wlr_surface, output_x: f64, output_y: f64, full: bool) {
+fn damage_surface_at(
+    output: &Output,
+    surface: &mut wl::wlr_surface,
+    output_x: f64,
+    output_y: f64,
+    full: bool,
+) {
     let sw = surface.current.width;
     let sh = surface.current.width;
     let mut area = scaled_box(output, output_x, output_y, sw as f64, sh as f64);
@@ -481,7 +508,7 @@ fn damage_surface_at(output: &Output, surface: &mut wl::wlr_surface, output_x: f
                         &mut dmg,
                         &mut dmg,
                         scale.ceil() as i32 - surface.current.scale,
-                        );
+                    );
                 }
                 wl::pixman_region32_translate(&mut dmg, area.x, area.y);
                 wl::wlr_output_damage_add(output.damage, &mut dmg);

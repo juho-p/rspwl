@@ -670,24 +670,27 @@ fn find_view(
     pos: Point,
 ) -> Option<(&Pin<Box<View>>, *mut wl::wlr_surface, Point)> {
     // TODO should do in mru order
-    server.views.values().find_map(|view| {
-        match &view.shell_surface {
-            ShellView::Xdg(xdgview) => {
-                let xdg_surface = xdgview.xdgsurface.xdg_surface;
-                let sx = pos.x - view.x as f64;
-                let sy = pos.y - view.y as f64;
-                let mut sub = Point { x: 0.0, y: 0.0 };
-                let surface = unsafe {
-                    wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
-                };
-                if surface.is_null() {
-                    None
-                } else {
-                    Some((view, surface, sub))
-                }
+    let mut views = server
+        .mru_node
+        .iter()
+        .rev()
+        .flat_map(|id| server.views.get(id).into_iter());
+    views.find_map(|view| match &view.shell_surface {
+        ShellView::Xdg(xdgview) => {
+            let xdg_surface = xdgview.xdgsurface.xdg_surface;
+            let sx = pos.x - view.x as f64;
+            let sy = pos.y - view.y as f64;
+            let mut sub = Point { x: 0.0, y: 0.0 };
+            let surface = unsafe {
+                wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
+            };
+            if surface.is_null() {
+                None
+            } else {
+                Some((view, surface, sub))
             }
-            ShellView::Empty => None,
         }
+        ShellView::Empty => None,
     })
 }
 
