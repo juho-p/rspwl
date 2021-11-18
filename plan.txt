@@ -35,6 +35,5 @@ later
 - handle wayland and xdg protocols better
     - wlr_surface_send_enter
     - could handle requests & stuff only when mapped (signal add on map, signal remove on unmap)
-- popups and subsurfaces are error prone. See if they REALLY work. Or refactor to be less scary.
 - scaling a mystery. bunch of code but does it really work?
 - start to understand wlroots input handling: https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html

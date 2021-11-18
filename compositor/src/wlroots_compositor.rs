@@ -2,7 +2,7 @@
 //     lets goooo
 
 use std::collections::HashMap;
-use std::ffi::{c_void, CStr};
+use std::ffi::c_void;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -89,129 +89,283 @@ impl Drop for Output {
     }
 }
 
+enum ShellView {
+    Empty,
+    Xdg(XdgView),
+    // later: layer-shell, xwayland ?
+}
 pub struct View {
     id: NodeId,
 
-    xdg_surface: *mut wl::wlr_xdg_surface,
+    shell_surface: ShellView,
 
-    map: wl::wl_listener,
-    unmap: wl::wl_listener,
-    commit: wl::wl_listener,
-    destroy: wl::wl_listener,
-    request_move: wl::wl_listener,
-    request_resize: wl::wl_listener,
-    new_subsurface: wl::wl_listener,
-    new_popup: wl::wl_listener,
-    mapped: bool,
     x: i32,
     y: i32,
+
     children: Vec<Pin<Box<ViewChild>>>,
-    popups: Vec<Pin<Box<Popup>>>,
 
     _pin: PhantomPinned,
 }
 
 impl View {
-    fn add_popup(&mut self, popup: *mut wl::wlr_xdg_popup) {
-        self.popups.push(Popup::new(self.id, popup));
-        unsafe {
-            self.children
-                .push(ViewChild::new(self.id, (*(*popup).base).surface));
+    pub unsafe fn from_xdg_toplevel_surface(id: NodeId, xdg_surface: *mut wl::wlr_xdg_surface) -> Pin<Box<Self>> {
+        let mut view = Box::pin(View {
+            id,
+            shell_surface: ShellView::Empty,
+            x: 70,
+            y: 5,
+            children: Vec::new(),
+
+            _pin: PhantomPinned,
+        });
+
+        let x = view.as_mut().get_unchecked_mut();
+        x.shell_surface = ShellView::Xdg(XdgView::new(x, xdg_surface));
+        x.configure_listeners();
+
+        view
+    }
+
+    unsafe fn configure_listeners(&mut self) {
+        match &mut self.shell_surface {
+            ShellView::Empty => (),
+            ShellView::Xdg(v) => v.configure_listeners(),
         }
     }
 }
 
-impl Drop for View {
+struct XdgView {
+    xdgsurface: XdgSurface,
+    toplevel: *mut wl::wlr_xdg_toplevel,
+    request_move: wl::wl_listener,
+    request_resize: wl::wl_listener,
+
+    _pin: PhantomPinned,
+}
+
+impl XdgView {
+    unsafe fn new(parent: *mut View, xdg_surface: *mut wl::wlr_xdg_surface) -> Self {
+        let toplevel = &mut *(*xdg_surface).__bindgen_anon_1.toplevel;
+        let surface = (*xdg_surface).surface;
+        XdgView {
+            xdgsurface: XdgSurface::new(parent, xdg_surface, surface, SurfaceBehavior::Toplevel),
+            toplevel,
+
+            request_move: new_wl_listener(Some(xdg_view_request_move)),
+            request_resize: new_wl_listener(Some(xdg_view_request_resize)),
+
+            _pin: PhantomPinned,
+        }
+    }
+
+    // Can't be moved after this is called. Unsafe.
+    unsafe fn configure_listeners(&mut self) {
+        self.xdgsurface.configure_listeners();
+
+        let x = &mut *self.toplevel;
+        signal_add(&mut x.events.request_move, &mut self.request_move);
+        signal_add(&mut x.events.request_resize, &mut self.request_resize);
+    }
+}
+unsafe extern "C" fn xdg_view_request_move(_listener: *mut wl::wl_listener, _: *mut c_void) {
+    println!("requested move but we don't care");
+}
+unsafe extern "C" fn xdg_view_request_resize(_listener: *mut wl::wl_listener, _: *mut c_void) {
+    println!("requested resize but we don't care");
+}
+
+struct XdgSurface {
+    surface: Surface,
+
+    mapped: bool,
+
+    xdg_surface: *mut wl::wlr_xdg_surface,
+    map: wl::wl_listener,
+    unmap: wl::wl_listener,
+    new_popup: wl::wl_listener,
+}
+
+impl XdgSurface {
+    fn new(parent: *mut View, xdg_surface: *mut wl::wlr_xdg_surface, wl_surface: *mut wl::wlr_surface, kind: SurfaceBehavior) -> Self {
+        XdgSurface {
+            surface: Surface::new(parent, wl_surface, kind),
+            mapped: false,
+            xdg_surface,
+            map: new_wl_listener(Some(xdg_surface_map)),
+            unmap: new_wl_listener(Some(xdg_surface_unmap)),
+            new_popup: new_wl_listener(Some(xdg_surface_new_popup)),
+        }
+    }
+
+    // Can't be moved after this is called. Unsafe.
+    unsafe fn configure_listeners(&mut self) {
+        self.surface.configure_listeners();
+        let x = &mut *self.xdg_surface;
+        signal_add(&mut x.events.map, &mut self.map);
+        signal_add(&mut x.events.unmap, &mut self.unmap);
+        signal_add(&mut x.events.new_popup, &mut self.new_popup);
+    }
+}
+
+impl Drop for XdgSurface {
     fn drop(&mut self) {
         unsafe {
             wl::wl_list_remove(&mut self.map.link);
             wl::wl_list_remove(&mut self.unmap.link);
-            wl::wl_list_remove(&mut self.commit.link);
-            wl::wl_list_remove(&mut self.destroy.link);
-            wl::wl_list_remove(&mut self.request_move.link);
-            wl::wl_list_remove(&mut self.request_resize.link);
-            wl::wl_list_remove(&mut self.new_subsurface.link);
             wl::wl_list_remove(&mut self.new_popup.link);
         }
     }
 }
 
-struct ViewChild {
-    destroy: wl::wl_listener,
-    commit: wl::wl_listener,
-    new_subsurface: wl::wl_listener,
+unsafe extern "C" fn xdg_surface_map(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let it = &mut *container_of!(XdgSurface, map, listener);
+    let view = &mut *it.surface.view;
 
+    it.mapped = true;
+
+    info!("Mapped {}", view.id);
+
+    damage_view(&*server_ptr(), view, true);
+}
+unsafe extern "C" fn xdg_surface_unmap(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let it = &mut *container_of!(XdgSurface, unmap, listener);
+    let view = &mut *it.surface.view;
+
+    info!("Unmapped {}", view.id);
+
+    damage_view(&*server_ptr(), view, true);
+}
+unsafe extern "C" fn xdg_surface_new_popup(listener: *mut wl::wl_listener, data: *mut c_void) {
+    let it = &mut *container_of!(XdgSurface, new_popup, listener);
+    let view = &mut *it.surface.view;
+
+    info!("New popup");
+    let popup = data as *mut wl::wlr_xdg_popup;
+    let popup = &mut *popup;
+    let xdg_surface = &mut *popup.base;
+    let surface = xdg_surface.surface;
+
+    view.children.push(ViewChild::new_popup(XdgSurface::new(it.surface.view, xdg_surface, surface, SurfaceBehavior::Child)));
+}
+
+enum SurfaceBehavior {
+    Toplevel,
+    Child
+}
+struct Surface {
+    view: *mut View,
+    surface: *mut wl::wlr_surface,
+    commit: wl::wl_listener,
+    destroy: wl::wl_listener,
+    new_subsurface: wl::wl_listener,
+    destroy_behaviour: SurfaceBehavior,
+}
+
+impl Surface {
+    fn new(view: *mut View, surface: *mut wl::wlr_surface, behaviour: SurfaceBehavior) -> Self {
+        Surface {
+            view,
+            surface,
+            commit: new_wl_listener(Some(surface_commit)),
+            destroy: new_wl_listener(Some(surface_destroy)),
+            new_subsurface: new_wl_listener(Some(surface_new_subsurface)),
+            destroy_behaviour: behaviour,
+        }
+    }
+
+    unsafe fn configure_listeners(&mut self) {
+        let x = &mut*self.surface;
+        signal_add(&mut x.events.commit, &mut self.commit);
+        signal_add(&mut x.events.destroy, &mut self.destroy);
+        signal_add(&mut x.events.new_subsurface, &mut self.new_subsurface);
+    }
+}
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe {
+            wl::wl_list_remove(&mut self.commit.link);
+            wl::wl_list_remove(&mut self.destroy.link);
+            wl::wl_list_remove(&mut self.new_subsurface.link);
+        }
+    }
+}
+
+unsafe extern "C" fn surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let it = &mut *container_of!(Surface, commit, listener);
+    let view = &mut *it.view;
+    info!("commit");
+    damage_view(&*server_ptr(), view, false);
+}
+unsafe extern "C" fn surface_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
+    let it = &mut *container_of!(Surface, destroy, listener);
+    let view = &mut *it.view;
+
+    match it.destroy_behaviour {
+        SurfaceBehavior::Toplevel => {
+            let server = &mut *server_ptr();
+            server.views.remove(&view.id);
+            remove_id(&mut server.mru_node, view.id);
+        }
+        SurfaceBehavior::Child => {
+            let wlr_surface = it.surface;
+
+            if let Some(pos) = view.children.iter().position(|x| x.surface == wlr_surface) {
+                std::mem::drop(it); // for clarity, the ref is invalid after next line
+                view.children.swap_remove(pos);
+            }
+        }
+    }
+}
+unsafe extern "C" fn surface_new_subsurface(listener: *mut wl::wl_listener, data: *mut c_void) {
+    let it = &mut *container_of!(Surface, new_subsurface, listener);
+    let view = &mut *it.view;
+
+    info!("New subsurface");
+
+    let subsurface = data as *mut wl::wlr_subsurface;
+    let surface = (*subsurface).surface;
+
+    view.children.push(ViewChild::new_subsurface(Surface::new(it.view, surface, SurfaceBehavior::Child)));
+}
+
+enum PopupOrSubsurface {
+    Popup(XdgSurface),
+    Subsurface(Surface),
+}
+struct ViewChild {
+    child: PopupOrSubsurface,
     surface: *mut wl::wlr_surface,
 
-    parent_id: NodeId,
     _pin: PhantomPinned,
 }
+
 impl ViewChild {
-    fn new(parent_id: NodeId, surface: *mut wl::wlr_surface) -> Pin<Box<Self>> {
-        let mut child = Box::pin(ViewChild {
-            parent_id,
+    fn new_subsurface(surface: Surface) -> Pin<Box<Self>> {
+        let wl_surface = surface.surface;
+        ViewChild {
+            child: PopupOrSubsurface::Subsurface(surface),
+            surface: wl_surface,
+            _pin: PhantomPinned,
+        }.configure()
+    }
+    fn new_popup(xdgsurface: XdgSurface) -> Pin<Box<Self>> {
+        let surface = xdgsurface.surface.surface;
+        ViewChild {
+            child: PopupOrSubsurface::Popup(xdgsurface),
             surface,
-            destroy: new_wl_listener(Some(child_destroy)),
-            commit: new_wl_listener(Some(child_commit)),
-            new_subsurface: new_wl_listener(Some(child_new_subsurface)),
-
             _pin: PhantomPinned,
-        });
-
-        unsafe {
-            let surface = &mut *surface;
-            let x = child.as_mut().get_unchecked_mut();
-            signal_add(&mut surface.events.destroy, &mut x.destroy);
-            signal_add(&mut surface.events.commit, &mut x.commit);
-            signal_add(&mut surface.events.new_subsurface, &mut x.new_subsurface);
-        }
-
-        child
+        }.configure()
     }
-}
-impl Drop for ViewChild {
-    fn drop(&mut self) {
+    fn configure(self) -> Pin<Box<Self>> {
+        let mut x = Box::pin(self);
         unsafe {
-            wl::wl_list_remove(&mut self.destroy.link);
-            wl::wl_list_remove(&mut self.commit.link);
+            let xr = x.as_mut().get_unchecked_mut();
+            match &mut xr.child {
+                PopupOrSubsurface::Popup(x) => x.configure_listeners(),
+                PopupOrSubsurface::Subsurface(x) => x.configure_listeners(),
+            }
         }
-    }
-}
-struct Popup {
-    destroy: wl::wl_listener,
-    new_popup: wl::wl_listener,
-    popup: *mut wl::wlr_xdg_popup,
-
-    parent_id: NodeId,
-    _pin: PhantomPinned,
-}
-impl Popup {
-    fn new(parent_id: NodeId, xdg_popup: *mut wl::wlr_xdg_popup) -> Pin<Box<Self>> {
-        let mut popup = Box::pin(Popup {
-            parent_id,
-            popup: xdg_popup,
-            destroy: new_wl_listener(Some(popup_destroy)),
-            new_popup: new_wl_listener(Some(popup_new_popup)),
-
-            _pin: PhantomPinned,
-        });
-
-        unsafe {
-            let xdg_surface = &mut *(*xdg_popup).base;
-            let x = popup.as_mut().get_unchecked_mut();
-            signal_add(&mut xdg_surface.events.destroy, &mut x.destroy);
-            signal_add(&mut xdg_surface.events.new_popup, &mut x.new_popup);
-        }
-
-        popup
-    }
-}
-impl Drop for Popup {
-    fn drop(&mut self) {
-        unsafe {
-            wl::wl_list_remove(&mut self.destroy.link);
-            wl::wl_list_remove(&mut self.new_popup.link);
-        }
+        x
     }
 }
 
@@ -448,61 +602,18 @@ fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
 
 fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _: ()) {
     if xdg_surface.role != wl::wlr_xdg_surface_role_WLR_XDG_SURFACE_ROLE_TOPLEVEL {
-        info!("xdg-shell popup");
+        info!("xdg-shell popup (this log is just noise)");
         return;
     }
 
     let id = server.new_node_id();
 
-    let mut view = Box::pin(View {
-        id,
-        xdg_surface,
-        map: new_wl_listener(Some(xdg_surface_map)),
-        unmap: new_wl_listener(Some(xdg_surface_unmap)),
-        commit: new_wl_listener(Some(surface_commit)),
-        destroy: new_wl_listener(Some(xdg_surface_destroy)),
-        request_move: new_wl_listener(Some(xdg_surface_request_move)),
-        request_resize: new_wl_listener(Some(xdg_surface_request_resize)),
-        new_subsurface: new_wl_listener(Some(new_subsurface)),
-        new_popup: new_wl_listener(Some(new_popup)),
-        mapped: false,
-        x: 70,
-        y: 5,
-        children: Vec::new(),
-        popups: Vec::new(),
-
-        _pin: PhantomPinned,
-    });
-
-    unsafe {
-        let x = view.as_mut().get_unchecked_mut();
-
-        let toplevel = &mut *xdg_surface.__bindgen_anon_1.toplevel;
-        let wev = &mut (*xdg_surface.surface).events;
-        let tev = &mut toplevel.events;
-
-        info!(
-            "xdg-shell toplevel {:?}: {:?}",
-            CStr::from_ptr(toplevel.app_id),
-            CStr::from_ptr(toplevel.title)
-        );
-
-        // TODO XXX ?? keep pinging more later
-        wl::wlr_xdg_surface_ping(xdg_surface);
-
-        signal_add(&mut xdg_surface.events.map, &mut x.map);
-        signal_add(&mut xdg_surface.events.unmap, &mut x.unmap);
-        signal_add(&mut wev.commit, &mut x.commit);
-        signal_add(&mut xdg_surface.events.destroy, &mut x.destroy);
-        signal_add(&mut tev.request_move, &mut x.request_move);
-        signal_add(&mut tev.request_resize, &mut x.request_resize);
-        signal_add(&mut wev.new_subsurface, &mut x.new_subsurface);
-        signal_add(&mut xdg_surface.events.new_popup, &mut x.new_popup);
-    }
+    let view = unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) };
 
     server.views.insert(id, view);
     server.mru_node.push(id);
 
+    // TODO remove this
     invalidate_everything(server);
 }
 
@@ -694,11 +805,16 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
 
     debug!("BEGIN RENDER");
     // TODO mru order
-    for view in server.views.values().filter(|x| x.mapped) {
-        xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
-            debug!("-surface");
-            render_surface(s, x, y, server, output, view, &now, damage);
-        })
+    for view in server.views.values() {
+        match &view.shell_surface {
+            ShellView::Empty => info!("Empty view (WHY???)"),
+            ShellView::Xdg(xdgview) => {
+                xdg_surface_for_each_surface(xdgview.xdgsurface.xdg_surface, |s, x, y| {
+                    debug!("-surface");
+                    render_surface(s, x, y, server, output, view, &now, damage);
+                })
+            }
+        }
         // wl::wlr_xdg_surface_for_each_surface(
         //     view.xdg_surface,
         //     Some(render_surface),
@@ -769,11 +885,17 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
         // TODO release button here (resize drag, etc)
     } else {
         if let Some((view, surface, _)) = find_view(server, cursor_pos(server)) {
+            let focus_toplevel = match &view.shell_surface {
+                ShellView::Xdg(v) => Some(v.xdgsurface.xdg_surface),
+                ShellView::Empty => None,
+                // NOTE: doesn't really work for non xdg, but that's a problem for another day
+            };
+            info!("clicked view {}", view.id);
             let view_id = view.id;
-            let toplevel = view.xdg_surface;
-            info!("clicked view {}", view_id);
             unsafe {
-                focus(server, view_id, toplevel, surface);
+                if let Some(x) = focus_toplevel {
+                    focus_xdg(server, x, view_id, surface);
+                }
             }
         } else {
             info!("clicked outside view");
@@ -799,12 +921,13 @@ fn cursor_frame(server: &mut Server, _: &mut (), _: ()) {
     }
 }
 
-unsafe fn focus(
+unsafe fn focus_xdg(
     server: &mut Server,
+    xdg_surface: *mut wl::wlr_xdg_surface,
     view_id: NodeId,
-    toplevel: *mut wl::wlr_xdg_surface,
     surface: *mut wl::wlr_surface,
 ) {
+    // We have mut ref to server and ref to view. breaks borrow checker. hope Rust won't mind
     println!("set focus");
     let prev_surface = (*server.seat).keyboard_state.focused_surface;
     if prev_surface == surface {
@@ -812,11 +935,14 @@ unsafe fn focus(
     }
     if !prev_surface.is_null() {
         let prev = wl::wlr_xdg_surface_from_wlr_surface(prev_surface);
-        wl::wlr_xdg_toplevel_set_activated(prev, false);
+        if !prev.is_null() {
+            wl::wlr_xdg_toplevel_set_activated(prev, false);
+        }
     }
 
     let keyboard = &mut *wl::wlr_seat_get_keyboard(server.seat);
-    wl::wlr_xdg_toplevel_set_activated(toplevel, true);
+
+    wl::wlr_xdg_toplevel_set_activated(xdg_surface, true);
     wl::wlr_seat_keyboard_notify_enter(
         server.seat,
         surface,
@@ -979,16 +1105,22 @@ fn find_view(
 ) -> Option<(&Pin<Box<View>>, *mut wl::wlr_surface, Point)> {
     // TODO should do in mru order
     server.views.values().find_map(|view| {
-        let sx = pos.x - view.x as f64;
-        let sy = pos.y - view.y as f64;
-        let mut sub = Point { x: 0.0, y: 0.0 };
-        let surface = unsafe {
-            wl::wlr_xdg_surface_surface_at(view.xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
-        };
-        if surface.is_null() {
-            None
-        } else {
-            Some((view, surface, sub))
+        match &view.shell_surface {
+            ShellView::Xdg(xdgview) => {
+                let xdg_surface = xdgview.xdgsurface.xdg_surface;
+                let sx = pos.x - view.x as f64;
+                let sy = pos.y - view.y as f64;
+                let mut sub = Point { x: 0.0, y: 0.0 };
+                let surface = unsafe {
+                    wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
+                };
+                if surface.is_null() {
+                    None
+                } else {
+                    Some((view, surface, sub))
+                }
+            }
+            ShellView::Empty => None,
         }
     })
 }
@@ -1001,57 +1133,6 @@ fn invalidate_everything(server: &Server) {
     }
 }
 
-macro_rules! view {
-    ($listener:ident, $field:tt) => {
-        &mut *container_of!(View, $field, $listener)
-    };
-}
-
-unsafe extern "C" fn xdg_surface_map(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let view = view!(listener, map);
-    view.mapped = true;
-    focus(
-        &mut *server_ptr(),
-        view.id,
-        view.xdg_surface,
-        (*view.xdg_surface).surface,
-    );
-    damage_view(&*server_ptr(), view, true);
-}
-unsafe extern "C" fn xdg_surface_unmap(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let view = view!(listener, unmap);
-    view.mapped = false;
-    // should do damage here
-}
-unsafe extern "C" fn surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let view = view!(listener, commit);
-    info!("commit");
-    damage_view(&*server_ptr(), view, true);
-}
-unsafe extern "C" fn new_subsurface(listener: *mut wl::wl_listener, data: *mut c_void) {
-    let view = view!(listener, new_subsurface);
-    info!("New subsurface");
-
-    let subsurface = data as *mut wl::wlr_subsurface;
-
-    let id = view.id;
-    view.children
-        .push(ViewChild::new(id, (*subsurface).surface));
-}
-unsafe extern "C" fn new_popup(listener: *mut wl::wl_listener, data: *mut c_void) {
-    let view = view!(listener, new_popup);
-    info!("New popup");
-
-    let popup = data as *mut wl::wlr_xdg_popup;
-
-    view.add_popup(popup);
-}
-unsafe extern "C" fn xdg_surface_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let id = view!(listener, destroy).id;
-    let server = &mut *server_ptr();
-    server.views.remove(&id);
-    remove_id(&mut server.mru_node, id);
-}
 fn remove_id(ids: &mut Vec<NodeId>, id: NodeId) {
     let mru_idx = ids
         .iter()
@@ -1060,78 +1141,6 @@ fn remove_id(ids: &mut Vec<NodeId>, id: NodeId) {
     ids.remove(mru_idx);
 }
 
-unsafe extern "C" fn xdg_surface_request_move(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let id = view!(listener, request_move).id;
-
-    println!("view {} requested move but we don't care", id);
-}
-unsafe extern "C" fn xdg_surface_request_resize(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let id = view!(listener, request_resize).id;
-    println!("view {} requested resize but we don't care", id);
-}
-
-unsafe extern "C" fn child_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let child = &*container_of!(ViewChild, destroy, listener);
-    if let Some(view) = (*server_ptr()).views.get_mut(&child.parent_id) {
-        if let Some(index) = view
-            .children
-            .iter()
-            .position(|x| x.surface == child.surface)
-        {
-            view.as_mut()
-                .get_unchecked_mut()
-                .children
-                .swap_remove(index);
-        } else {
-            warn!("subsurface_destroy: Child is missing");
-        }
-    } else {
-        warn!("subsurface_destroy: View is missing");
-    }
-}
-unsafe extern "C" fn child_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let _child = &*container_of!(ViewChild, commit, listener);
-    // TODO bad XXX
-    warn!("Invalidate all for nothing");
-    invalidate_everything(&*server_ptr());
-}
-unsafe extern "C" fn child_new_subsurface(listener: *mut wl::wl_listener, data: *mut c_void) {
-    // TODO should unify this surface handling stuff
-    let subsurface = data as *mut wl::wlr_subsurface;
-    let child = &*container_of!(ViewChild, new_subsurface, listener);
-    if let Some(view) = (*server_ptr()).views.get_mut(&child.parent_id) {
-        view.as_mut()
-            .get_unchecked_mut()
-            .children
-            .push(ViewChild::new(child.parent_id, (*subsurface).surface));
-    } else {
-        warn!("subsurface_new_subsurface: View is missing");
-    }
-}
-
-unsafe extern "C" fn popup_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
-    let popup = &*container_of!(Popup, destroy, listener);
-    info!("Destroy popup");
-    if let Some(view) = (*server_ptr()).views.get_mut(&popup.parent_id) {
-        if let Some(index) = view.popups.iter().position(|x| x.popup == popup.popup) {
-            view.as_mut().get_unchecked_mut().popups.swap_remove(index);
-        } else {
-            warn!("subsurface_destroy: Child is missing");
-        }
-    } else {
-        warn!("subsurface_destroy: View is missing");
-    }
-}
-unsafe extern "C" fn popup_new_popup(listener: *mut wl::wl_listener, data: *mut c_void) {
-    let new_xdg_popup = data as *mut wl::wlr_xdg_popup;
-    info!("New popup  from popup");
-    let popup = &*container_of!(Popup, new_popup, listener);
-    if let Some(view) = (*server_ptr()).views.get_mut(&popup.parent_id) {
-        view.as_mut().get_unchecked_mut().add_popup(new_xdg_popup);
-    } else {
-        warn!("popup_new_popup: View is missing");
-    }
-}
 
 fn scaled_box(output: &Output, x: f64, y: f64, w: f64, h: f64) -> wl::wlr_box {
     let scale = unsafe { (*output.wlr_output).scale as f64 };
@@ -1147,11 +1156,17 @@ fn scaled_box(output: &Output, x: f64, y: f64, w: f64, h: f64) -> wl::wlr_box {
 fn damage_view(server: &Server, view: &mut View, full: bool) {
     for output in server.outputs.iter() {
         let o = output_coords(server, output);
-        xdg_surface_for_each_surface(view.xdg_surface, |s, x, y| {
-            let ox = o.x + view.x as f64 + x as f64;
-            let oy = o.y + view.y as f64 + y as f64;
-            damage_surface_at(output, s, ox, oy, full);
-        });
+        match &view.shell_surface {
+            ShellView::Empty => (),
+            ShellView::Xdg(v) => {
+                let xdg_surface = v.xdgsurface.xdg_surface;
+                xdg_surface_for_each_surface(xdg_surface, |s, x, y| {
+                    let ox = o.x + view.x as f64 + x as f64;
+                    let oy = o.y + view.y as f64 + y as f64;
+                    damage_surface_at(output, s, ox, oy, full);
+                });
+            }
+        }
     }
 }
 

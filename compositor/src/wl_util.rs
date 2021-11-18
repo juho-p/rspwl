@@ -1,7 +1,5 @@
 use std::ffi::c_void;
-use std::marker::PhantomPinned;
 use std::os::raw::c_int;
-use std::pin::Pin;
 use std::ptr;
 
 use wl_sys as wl;
