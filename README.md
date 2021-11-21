@@ -1,6 +1,8 @@
 # rspwl
 
-Wayland compositor based on wlroots, written in Rust.
+Wayland compositor based on wlroots, written in Rust. For build instructions, see the end of the README.
+
+**Not ready for any practical use**
 
 ## Goal
 
@@ -13,7 +15,7 @@ me to consider that. So lets just use a lot of unsafe Rust instead.
 
 ## Current status
 
-**Not ready for daily use**
+It's not ready yet.
 
 ### Works
 - Composing windows (kinda, all the top levels are put into same coordinates)
@@ -25,9 +27,48 @@ me to consider that. So lets just use a lot of unsafe Rust instead.
 - basic tiling
 - background images (now there's no bg, and it is never redrawn. imagine the fun of that)
 - floating windows with moving and resizing
+- workspaces
 - BSPWM style ipc (bspc -> rspc) with some basic configuration
 - layer-shell
 - advanced tiling
 - advanced configuration
 - other useful protocols
 - xwayland support
+- everything else
+
+### Contributing
+
+So you found this project's Github page and want to contribute in some way for
+some reason? You are allowed.
+
+Feel free to open issues of any kind (bug, feature request, feedback, question,
+...). Also feel free to create PRs (I'll try to review and decide if merging is
+fine "quickly", withing a week or so). Also feel free to... actually nothing is
+forbidden *yet*.
+
+### Build instructions
+
+- You'll need recent'ish stable rust toolchain
+- You'll also need a C-compiler, pkg-config and probably quite a lot other build tools
+- Dynamically linked libraries & their headers ("dev-packages")
+
+Libraries needed: wayland-protocols, wayland-server, xkbcommon, pixman-1,
+wlroots and libclang
+
+wlroots must be at least 13.0, libclang is used for just the build step
+(generate Rust bindings for the libraries listed there)
+
+After everyting is installed, just run `cargo run` to compile and run. By
+default, if you are running under X or Wayland already, wlroots opens a window
+that contains the compositor under your WM, which is preferred way to test this
+at the moment.
+
+For reference, there are couple of dockerfiles that fetch the dependencies and
+test the build in Docker under `test-builds/`. For people running on Linux with
+very new packages, you'd do similar things as for the current
+`debian-experimental.Dockerfile` as an example (I use debian btw, so didn't yet
+include any other examples yet). For people running on Linux with very old
+packages, see the `debian.Dockerfile` as an example, where you'll most likely
+have to build recent versions of some of the dependencies.
+
+In short, for example: `sudo docker build -f test-builds/debian.Dockerfile .`

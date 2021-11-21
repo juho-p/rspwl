@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    pkg_config_check(&["--exact-version=0.13.0", "wlroots", "--print-errors"]);
+    // I *think* we can work with both 0.13 and 0.14. Maybe.
+    pkg_config_check(&["--atleast-version=0.13.0", "wlroots", "--print-errors"]);
 
     let libs = [
         "wayland-protocols",
