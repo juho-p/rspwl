@@ -21,10 +21,10 @@ It's not ready yet.
 - Composing windows (kinda, all the top levels are put into same coordinates)
 - Effiecient(ish) rendering with damage tracking (mostly thanks to wlroots)
 - xdg-shell with all the fancy popups and stuff
+- Very basic tiling (but it's pretty bad)
 
 ### In the future
-- make it easy to build
-- basic tiling
+- better tiling
 - background images (now there's no bg, and it is never redrawn. imagine the fun of that)
 - floating windows with moving and resizing
 - workspaces
@@ -34,6 +34,7 @@ It's not ready yet.
 - advanced configuration
 - other useful protocols
 - xwayland support
+- make it easier to build
 - everything else
 
 ### Contributing
@@ -58,7 +59,7 @@ wlroots and libclang
 wlroots must be at least 13.0, libclang is used for just the build step
 (generate Rust bindings for the libraries listed there)
 
-After everyting is installed, just run `cargo run` to compile and run. By
+After everything is installed, just run `cargo run` to compile and run. By
 default, if you are running under X or Wayland already, wlroots opens a window
 that contains the compositor under your WM, which is preferred way to test this
 at the moment.

@@ -1,7 +1,3 @@
-// unsafe {
-//     lets goooo
-
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
@@ -9,6 +5,8 @@ use std::pin::Pin;
 use std::ptr;
 
 use wl_sys as wl;
+
+use crate::window_manager::WindowManager;
 
 use super::wl_util::*;
 
@@ -20,7 +18,7 @@ static mut SERVER_GLOBAL: *mut Server = ptr::null_mut();
 
 pub unsafe fn server_ptr() -> *mut Server {
     if SERVER_GLOBAL.is_null() {
-        panic!("BUG! Trying to use uninitialized server");
+        panic!("BUG! Uninitialized.");
     } else {
         SERVER_GLOBAL
     }
@@ -35,8 +33,6 @@ pub struct Server {
     pub renderer: *mut wl::wlr_renderer,
 
     pub xdg_shell: *mut wl::wlr_xdg_shell,
-    pub views: HashMap<NodeId, Pin<Box<View>>>,
-    pub mru_node: Vec<NodeId>,
 
     pub cursor: *mut wl::wlr_cursor,
     pub cursor_mgr: *mut wl::wlr_xcursor_manager,
@@ -58,7 +54,7 @@ pub struct Server {
     pub new_xdg_surface: Listener<wl::wlr_xdg_surface, ()>,
     pub new_output: Listener<wl::wlr_output, ()>,
 
-    pub next_node_id: NodeId,
+    pub wm: WindowManager,
 }
 
 impl Server {
@@ -66,39 +62,6 @@ impl Server {
         (1..255)
             .find(|id| self.outputs.iter().all(|output| output.id != *id))
             .expect("Too many outputs!")
-    }
-
-    pub fn new_node_id(&mut self) -> NodeId {
-        let candidate = self.next_node_id;
-        for _ in 0..1000 {
-            if !self.views.contains_key(&candidate) {
-                self.next_node_id = candidate + 1;
-                return candidate;
-            }
-        }
-        // This is paranoid and silly.
-        // There's no way anyone ever opens 2^32 surfaces. And theres definetely no way they do
-        // that AND have thousand surfaces AND they are are sequential.
-        panic!("Could not get new node id. Either compositor is bugged or you are doing something *VERY* weird.");
-    }
-
-    pub fn remove_view(&mut self, id: NodeId) {
-        self.views.remove(&id);
-        self.remove_from_mru(id);
-    }
-
-    pub fn touch_view(&mut self, id: NodeId) {
-        self.remove_from_mru(id);
-        self.mru_node.push(id);
-    }
-
-    fn remove_from_mru(&mut self, id: NodeId) {
-        let mru_idx = self
-            .mru_node
-            .iter()
-            .rposition(|x| *x == id)
-            .expect("BUG: view missing from mru vec");
-        self.mru_node.remove(mru_idx);
     }
 }
 
@@ -164,6 +127,28 @@ pub enum ShellView {
     Xdg(XdgView),
     // later: layer-shell, xwayland ?
 }
+
+impl ShellView {
+    fn configure_size(&self, w: u32, h: u32) {
+        match self {
+            ShellView::Empty => (),
+            ShellView::Xdg(xdgview) => {
+                unsafe {
+                    wl::wlr_xdg_toplevel_set_size(xdgview.xdgsurface.xdg_surface, w, h);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 pub struct View {
     pub id: NodeId,
 
@@ -203,6 +188,15 @@ impl View {
         match &mut self.shell_surface {
             ShellView::Empty => (),
             ShellView::Xdg(v) => v.configure_listeners(),
+        }
+    }
+
+    pub fn configure_rect(self: Pin<&mut Self>, rect: &Rect) {
+        self.shell_surface.configure_size(rect.w.round() as u32, rect.h.round() as u32);
+        unsafe {
+            let borrowed = self.get_unchecked_mut();
+            borrowed.x = rect.x.round() as i32;
+            borrowed.y = rect.y.round() as i32;
         }
     }
 }
@@ -387,7 +381,7 @@ unsafe extern "C" fn surface_destroy(listener: *mut wl::wl_listener, _: *mut c_v
         SurfaceBehavior::Toplevel => {
             let server = &mut *server_ptr();
             info!("Top level surface destroyed");
-            server.remove_view(view.id);
+            server.wm.remove_node(view.id);
         }
         SurfaceBehavior::Child => {
             let wlr_surface = it.surface;

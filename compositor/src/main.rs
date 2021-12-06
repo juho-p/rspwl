@@ -1,5 +1,6 @@
 mod wl_util;
 mod wlroots_compositor;
+mod window_manager;
 
 #[macro_use]
 extern crate log;
@@ -7,7 +8,7 @@ extern crate log;
 fn main() {
     // TODO rust logger overlaps with wlr logger, FIX IT
     pretty_env_logger::formatted_builder()
-        .parse_filters("info")
+        .parse_filters("debug")
         .init();
 
     println!("Hello, world!");

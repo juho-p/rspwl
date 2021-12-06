@@ -1,16 +1,14 @@
 // unsafe {
 //     lets goooo
 
-use std::collections::HashMap;
-use std::ffi::c_void;
+use std::{ffi::c_void, pin::Pin};
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
-use std::pin::Pin;
 use std::ptr;
 
 use wl_sys as wl;
 
-use crate::wlroots_compositor::server::*;
+use crate::{window_manager::WindowManager, wlroots_compositor::server::*};
 
 use super::{server::View, wl_util::*};
 
@@ -61,8 +59,6 @@ unsafe fn begin_adventure() {
         renderer,
 
         xdg_shell,
-        views: HashMap::new(),
-        mru_node: Vec::new(),
 
         cursor,
         cursor_mgr,
@@ -85,7 +81,7 @@ unsafe fn begin_adventure() {
         new_xdg_surface: Listener::new(new_xdg_surface, ()),
         new_output: Listener::new(new_output, ()),
 
-        next_node_id: 1,
+        wm: WindowManager::new(),
     };
 
     listen_server_signal(
@@ -187,12 +183,11 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         return;
     }
 
-    let id = server.new_node_id();
+    let id = server.wm.new_node_id();
 
     let view = unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) };
 
-    server.views.insert(id, view);
-    server.mru_node.push(id);
+    server.wm.add_node(view);
 
     // TODO remove this
     invalidate_everything(server);
@@ -371,14 +366,13 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
     debug!("BEGIN RENDER");
-    // TODO mru order
-    for view in server.views.values() {
+    for view in server.wm.views_for_render(output.id) {
         match &view.shell_surface {
             ShellView::Empty => info!("Empty view (WHY???)"),
             ShellView::Xdg(xdgview) => {
                 xdg_surface_for_each_surface(xdgview.xdgsurface.xdg_surface, |s, x, y| {
                     debug!("-surface");
-                    render_surface(s, x, y, server, output, view, &now, damage);
+                    render_surface(s, x, y, server, output, &view, &now, damage);
                 })
             }
         }
@@ -451,7 +445,7 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
     if event.state == wl::wlr_button_state_WLR_BUTTON_RELEASED {
         // TODO release button here (resize drag, etc)
     } else {
-        if let Some((view, surface, _)) = find_view(server, cursor_pos(server)) {
+        let to_focus = if let Some((view, surface, _)) = find_view(server, cursor_pos(server)) {
             let focus_toplevel = match &view.shell_surface {
                 ShellView::Xdg(v) => Some(v.xdgsurface.xdg_surface),
                 ShellView::Empty => None,
@@ -459,13 +453,17 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
             };
             info!("clicked view {}", view.id);
             let view_id = view.id;
-            unsafe {
-                if let Some(x) = focus_toplevel {
-                    focus_xdg(server, x, view_id, surface);
-                }
-            }
+
+            focus_toplevel.map(|x| (view_id, surface, x))
         } else {
             info!("clicked outside view");
+            None
+        };
+
+        unsafe {
+            if let Some((view_id, surface, xdgsurface)) = to_focus {
+                focus_xdg(server, xdgsurface, view_id, surface);
+            }
         }
     }
 }
@@ -518,7 +516,7 @@ unsafe fn focus_xdg(
         &mut keyboard.modifiers,
     );
 
-    server.touch_view(view_id);
+    server.wm.touch_node(view_id);
 }
 
 fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: ()) {
@@ -575,9 +573,6 @@ fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: (
     // TODO could still do this right
     let caps = wl::wl_seat_capability_WL_SEAT_CAPABILITY_POINTER
         | wl::wl_seat_capability_WL_SEAT_CAPABILITY_KEYBOARD;
-
-    //if server.keyboards.is_empty() {
-    //}
 
     unsafe {
         wl::wlr_seat_set_capabilities(server.seat, caps);
@@ -665,16 +660,12 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
     }
 }
 
-fn find_view(
-    server: &Server,
+fn find_view<'a>(
+    server: &'a Server,
     pos: Point,
-) -> Option<(&Pin<Box<View>>, *mut wl::wlr_surface, Point)> {
-    // TODO should do in mru order
-    let mut views = server
-        .mru_node
-        .iter()
-        .rev()
-        .flat_map(|id| server.views.get(id).into_iter());
+) -> Option<(std::cell::Ref<'a, Pin<Box<View>>>, *mut wl::wlr_surface, Point)> {
+    let mut views = server.wm.views_for_finding();
+
     views.find_map(|view| match &view.shell_surface {
         ShellView::Xdg(xdgview) => {
             let xdg_surface = xdgview.xdgsurface.xdg_surface;

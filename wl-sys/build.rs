@@ -70,7 +70,7 @@ fn main() {
                 .map(|x| x.to_string()),
         );
 
-    let bindings = builder.generate().unwrap();
+    let bindings = builder.generate().expect("Failed to generate Rust bindings");
 
     bindings
         .write_to_file(out_path.join("bindings.rs"))
