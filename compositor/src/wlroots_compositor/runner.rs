@@ -4,10 +4,11 @@
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::{ffi::c_void, pin::Pin};
+use std::{ffi::c_void};
 
 use wl_sys as wl;
 
+use crate::tree::ViewRef;
 use crate::{window_manager::WindowManager, wlroots_compositor::server::*};
 
 use super::{server::View, wl_util::*};
@@ -187,7 +188,7 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
 
     let view = unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) };
 
-    server.wm.add_node(view);
+    server.wm.add_view(view);
 
     // TODO remove this
     invalidate_everything(server);
@@ -242,8 +243,8 @@ unsafe fn render_surface(
         x: mut ox,
         y: mut oy,
     } = output_coords(server.output_layout, output);
-    ox += (view.x + sx) as f64;
-    oy += (view.y + sy) as f64;
+    ox += (view.rect.x + sx as f32) as f64;
+    oy += (view.rect.y + sy as f32) as f64;
 
     let sw = (*surface).current.width;
     let sh = (*surface).current.height;
@@ -664,7 +665,7 @@ fn find_view<'a>(
     server: &'a Server,
     pos: Point,
 ) -> Option<(
-    std::cell::Ref<'a, Pin<Box<View>>>,
+    ViewRef,
     *mut wl::wlr_surface,
     Point,
 )> {
@@ -673,8 +674,8 @@ fn find_view<'a>(
     views.find_map(|view| match &view.shell_surface {
         ShellView::Xdg(xdgview) => {
             let xdg_surface = xdgview.xdgsurface.xdg_surface;
-            let sx = pos.x - view.x as f64;
-            let sy = pos.y - view.y as f64;
+            let sx = pos.x - view.rect.x as f64;
+            let sy = pos.y - view.rect.y as f64;
             let mut sub = Point { x: 0.0, y: 0.0 };
             let surface = unsafe {
                 wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)

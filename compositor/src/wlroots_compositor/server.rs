@@ -6,7 +6,7 @@ use std::ptr;
 
 use wl_sys as wl;
 
-use crate::window_manager::{WindowManager, OutputInfo};
+use crate::window_manager::{OutputInfo, WindowManager};
 
 use super::wl_util::*;
 
@@ -78,9 +78,7 @@ impl Server {
         self.wm.update_outputs(self.outputs.iter().map(|o| {
             let coords = output_coords(self.output_layout, o);
 
-            let (w, h) = unsafe {
-                ((*o.wlr_output).width as f32, (*o.wlr_output).height as f32)
-            };
+            let (w, h) = unsafe { ((*o.wlr_output).width as f32, (*o.wlr_output).height as f32) };
 
             debug!("output {}: {} {} {} {}", o.id, coords.x, coords.y, w, h);
 
@@ -91,7 +89,7 @@ impl Server {
                     y: coords.y as f32,
                     w,
                     h,
-                }
+                },
             }
         }));
     }
@@ -184,8 +182,7 @@ pub struct View {
 
     pub shell_surface: ShellView,
 
-    pub x: i32,
-    pub y: i32,
+    pub rect: Rect,
 
     children: Vec<Pin<Box<ViewChild>>>,
 
@@ -200,8 +197,12 @@ impl View {
         let mut view = Box::pin(View {
             id,
             shell_surface: ShellView::Empty,
-            x: 70,
-            y: 5,
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            },
             children: Vec::new(),
 
             _pin: PhantomPinned,
@@ -226,8 +227,7 @@ impl View {
             .configure_size(rect.w.round() as u32, rect.h.round() as u32);
         unsafe {
             let borrowed = self.get_unchecked_mut();
-            borrowed.x = rect.x.round() as i32;
-            borrowed.y = rect.y.round() as i32;
+            borrowed.rect = rect.clone();
         }
     }
 }
@@ -491,8 +491,8 @@ fn damage_view(server: &Server, view: &mut View, full: bool) {
             ShellView::Xdg(v) => {
                 let xdg_surface = v.xdgsurface.xdg_surface;
                 xdg_surface_for_each_surface(xdg_surface, |s, x, y| {
-                    let ox = o.x + view.x as f64 + x as f64;
-                    let oy = o.y + view.y as f64 + y as f64;
+                    let ox = o.x + view.rect.x as f64 + x as f64;
+                    let oy = o.y + view.rect.y as f64 + y as f64;
                     damage_surface_at(output, s, ox, oy, full);
                 });
             }
@@ -559,12 +559,7 @@ pub fn output_coords(layout: *mut wl::wlr_output_layout, output: &Output) -> Poi
     let mut x = 0.0;
     let mut y = 0.0;
     unsafe {
-        wl::wlr_output_layout_output_coords(
-            layout,
-            output.wlr_output,
-            &mut x,
-            &mut y,
-        );
+        wl::wlr_output_layout_output_coords(layout, output.wlr_output, &mut x, &mut y);
     }
     Point { x, y }
 }

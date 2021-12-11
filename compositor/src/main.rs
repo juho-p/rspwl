@@ -1,3 +1,4 @@
+mod tree;
 mod window_manager;
 mod wl_util;
 mod wlroots_compositor;
