@@ -1,10 +1,10 @@
 // unsafe {
 //     lets goooo
 
-use std::{ffi::c_void, pin::Pin};
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::{ffi::c_void, pin::Pin};
 
 use wl_sys as wl;
 
@@ -174,7 +174,7 @@ fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
         wl::wlr_output_layout_add_auto(server.output_layout, wlr_output);
     }
 
-    server.outputs.push(output);
+    server.add_output(output);
 }
 
 fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _: ()) {
@@ -241,7 +241,7 @@ unsafe fn render_surface(
     let Point {
         x: mut ox,
         y: mut oy,
-    } = output_coords(server, output);
+    } = output_coords(server.output_layout, output);
     ox += (view.x + sx) as f64;
     oy += (view.y + sy) as f64;
 
@@ -391,7 +391,7 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
 
 fn output_destroy(server: &mut Server, _: &mut (), id: OutputId) {
     // TODO test if it fine that this destroys the damage as well
-    server.outputs.retain(|x| x.id != id);
+    server.remove_output(id);
 }
 
 fn cursor_motion(server: &mut Server, motion: &mut wl::wlr_event_pointer_motion, _: ()) {
@@ -663,7 +663,11 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
 fn find_view<'a>(
     server: &'a Server,
     pos: Point,
-) -> Option<(std::cell::Ref<'a, Pin<Box<View>>>, *mut wl::wlr_surface, Point)> {
+) -> Option<(
+    std::cell::Ref<'a, Pin<Box<View>>>,
+    *mut wl::wlr_surface,
+    Point,
+)> {
     let mut views = server.wm.views_for_finding();
 
     views.find_map(|view| match &view.shell_surface {

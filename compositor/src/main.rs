@@ -1,6 +1,6 @@
+mod window_manager;
 mod wl_util;
 mod wlroots_compositor;
-mod window_manager;
 
 #[macro_use]
 extern crate log;

@@ -1,13 +1,10 @@
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::pin::Pin;
 use std::rc::{Rc, Weak};
-use std::cell::{Ref, RefMut, RefCell};
 
-use crate::wlroots_compositor::{Rect, View};
-
-pub type NodeId = u32;
-pub type OutputId = u8;
+use crate::wlroots_compositor::{NodeId, OutputId, Rect, View};
 
 pub struct WindowManager {
     nodes: HashMap<NodeId, Rc<Node>>,
@@ -15,49 +12,56 @@ pub struct WindowManager {
     workspaces: Vec<Workspace>,
     active_workspace_index: usize,
     next_node_id: NodeId,
+    dummy_workspace: Workspace,
 }
 
 pub type ViewRef<'a> = Ref<'a, Pin<Box<View>>>;
 
+pub struct OutputInfo {
+    pub id: OutputId,
+    pub rect: Rect,
+}
+
 impl WindowManager {
     pub fn new() -> WindowManager {
+        let ws = Workspace {
+            root: Rc::new(workspace_root()),
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            output_id: None,
+        };
         WindowManager {
             nodes: HashMap::new(),
             mru_view: Vec::new(),
-            workspaces: vec![
-                Workspace {
-                    root: Rc::new(workspace_root()),
-                    // TODO
-                    // XXX this is just hardcoded for now
-                    rect: Rect {
-                        x: 0.0,
-                        y: 0.0,
-                        w: 1000.0,
-                        h: 700.0,
-                    }
-                }
-            ],
+            workspaces: vec![ws.clone()],
             active_workspace_index: 0,
             next_node_id: 1,
+            dummy_workspace: ws,
         }
     }
 
     pub fn views_for_render<'a>(&'a self, _output: OutputId) -> impl Iterator<Item = ViewRef> {
         // TODO check output
-        self.pick_views(
-            self.mru_view.iter()
-                .map(|id| self.nodes.get(id).unwrap())
-        )
+        self.pick_views(self.mru_view.iter().map(|id| self.nodes.get(id).unwrap()))
     }
 
     pub fn views_for_finding<'a>(&'a self) -> impl Iterator<Item = ViewRef> {
         self.pick_views(
-            self.mru_view.iter().rev()
-                .map(|id| self.nodes.get(id).unwrap())
+            self.mru_view
+                .iter()
+                .rev()
+                .map(|id| self.nodes.get(id).unwrap()),
         )
     }
 
-    fn pick_views<'a>(&'a self, nodes: impl Iterator<Item = &'a Rc<Node>> + 'a) -> impl Iterator<Item = ViewRef> {
+    fn pick_views<'a>(
+        &'a self,
+        nodes: impl Iterator<Item = &'a Rc<Node>> + 'a,
+    ) -> impl Iterator<Item = ViewRef> {
         nodes.filter_map(|node| match &node.n {
             N::Leaf(leaf) => Some(leaf.view.borrow()),
             _ => None,
@@ -99,7 +103,7 @@ impl WindowManager {
             parent: RefCell::new(None),
             n: N::Leaf(Leaf {
                 view: RefCell::new(view),
-            })
+            }),
         });
 
         self.nodes.insert(new_leaf.id, new_leaf.clone());
@@ -152,11 +156,36 @@ impl WindowManager {
         }
         debug!("End configure");
     }
+
+    pub fn update_outputs(&mut self, outputs: impl Iterator<Item = OutputInfo>) {
+        // Just one workspace per output for now, to get started
+        let mut old_workspaces = Vec::new();
+        std::mem::swap(&mut old_workspaces, &mut self.workspaces);
+        let mut old_workspaces: HashMap<Option<OutputId>, Workspace> = old_workspaces
+            .into_iter()
+            .map(|x| (x.output_id, x))
+            .collect();
+
+        self.workspaces = outputs
+            .map(|o| {
+                old_workspaces
+                    .remove(&Some(o.id))
+                    .unwrap_or_else(|| Workspace {
+                        root: Rc::new(workspace_root()),
+                        rect: o.rect,
+                        output_id: Some(o.id),
+                    })
+            })
+            .chain(std::iter::once(self.dummy_workspace.clone()))
+            .collect();
+    }
 }
 
+#[derive(Debug, Clone)]
 pub struct Workspace {
     root: Rc<Node>,
     rect: Rect,
+    output_id: Option<OutputId>,
 }
 
 impl Workspace {
@@ -169,16 +198,18 @@ impl Workspace {
     }
 }
 
+#[derive(Debug)]
 enum N {
     Leaf(Leaf),
     Split(RefCell<Split>),
-    List(RefCell<Vec<Weak<Node>>>)
+    List(RefCell<Vec<Weak<Node>>>),
 }
 
+#[derive(Debug)]
 struct Node {
     id: NodeId,
     parent: RefCell<Option<Weak<Node>>>,
-    n: N
+    n: N,
 }
 
 impl Node {
@@ -191,6 +222,13 @@ struct Leaf {
     view: RefCell<Pin<Box<View>>>,
 }
 
+impl std::fmt::Debug for Leaf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Leaf { ... }")
+    }
+}
+
+#[derive(Debug)]
 enum Dir {
     // TODO: make use of this
     #[allow(unused)]
@@ -198,6 +236,7 @@ enum Dir {
     V,
 }
 
+#[derive(Debug)]
 struct Split {
     dir: Dir,
     a: Weak<Node>,
@@ -221,7 +260,7 @@ fn create_split(existing_node: Rc<Node>, new_node: Rc<Node>, new_id: NodeId, dir
             dir,
             a: Rc::downgrade(&new_node),
             b: Rc::downgrade(&existing_node),
-        }))
+        })),
     });
     *new_node.parent.borrow_mut() = Some(Rc::downgrade(&new_parent));
     *existing_node.parent.borrow_mut() = Some(Rc::downgrade(&new_parent));
@@ -235,7 +274,7 @@ fn remove_from_tree(node: Rc<Node>) -> Option<Rc<Node>> {
         _ => panic!("Only leaf can be removed for now..."),
     }
 
-    let remove_parent  = node.parent();
+    let remove_parent = node.parent();
     if let Some(ref parent) = remove_parent {
         match &parent.n {
             N::Leaf(_) => invalid_tree_op(),
@@ -245,7 +284,8 @@ fn remove_from_tree(node: Rc<Node>) -> Option<Rc<Node>> {
             }
             N::List(list) => {
                 debug!("Remove from list: {}", list.borrow().len());
-                list.borrow_mut().retain(|x| x.upgrade().unwrap().id != node.id);
+                list.borrow_mut()
+                    .retain(|x| x.upgrade().unwrap().id != node.id);
                 debug!("--> {}", list.borrow().len());
             }
         }
@@ -304,26 +344,38 @@ fn configure_views(root: Rc<Node>, rect: Rect) {
             let s = s.borrow();
             match s.dir {
                 Dir::H => {
-                    configure_views(s.a(), Rect {
-                        h: rect.h / 2.0,
-                        ..rect
-                    });
-                    configure_views(s.b(), Rect {
-                        h: rect.h / 2.0,
-                        y: rect.y + rect.h / 2.0,
-                        ..rect
-                    });
+                    configure_views(
+                        s.a(),
+                        Rect {
+                            h: rect.h / 2.0,
+                            ..rect
+                        },
+                    );
+                    configure_views(
+                        s.b(),
+                        Rect {
+                            h: rect.h / 2.0,
+                            y: rect.y + rect.h / 2.0,
+                            ..rect
+                        },
+                    );
                 }
                 Dir::V => {
-                    configure_views(s.a(), Rect {
-                        w: rect.w / 2.0,
-                        ..rect
-                    });
-                    configure_views(s.b(), Rect {
-                        w: rect.w / 2.0,
-                        x: rect.x + rect.w / 2.0,
-                        ..rect
-                    });
+                    configure_views(
+                        s.a(),
+                        Rect {
+                            w: rect.w / 2.0,
+                            ..rect
+                        },
+                    );
+                    configure_views(
+                        s.b(),
+                        Rect {
+                            w: rect.w / 2.0,
+                            x: rect.x + rect.w / 2.0,
+                            ..rect
+                        },
+                    );
                 }
             }
         }

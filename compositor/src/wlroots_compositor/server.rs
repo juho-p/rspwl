@@ -6,7 +6,7 @@ use std::ptr;
 
 use wl_sys as wl;
 
-use crate::window_manager::WindowManager;
+use crate::window_manager::{WindowManager, OutputInfo};
 
 use super::wl_util::*;
 
@@ -62,6 +62,38 @@ impl Server {
         (1..255)
             .find(|id| self.outputs.iter().all(|output| output.id != *id))
             .expect("Too many outputs!")
+    }
+
+    pub fn add_output(&mut self, output: Pin<Box<Output>>) {
+        self.outputs.push(output);
+        self.update_wm_outputs();
+    }
+
+    pub fn remove_output(&mut self, output_id: OutputId) {
+        self.outputs.retain(|x| x.id != output_id);
+        self.update_wm_outputs();
+    }
+
+    pub fn update_wm_outputs(&mut self) {
+        self.wm.update_outputs(self.outputs.iter().map(|o| {
+            let coords = output_coords(self.output_layout, o);
+
+            let (w, h) = unsafe {
+                ((*o.wlr_output).width as f32, (*o.wlr_output).height as f32)
+            };
+
+            debug!("output {}: {} {} {} {}", o.id, coords.x, coords.y, w, h);
+
+            OutputInfo {
+                id: o.id,
+                rect: Rect {
+                    x: coords.x as f32,
+                    y: coords.y as f32,
+                    w,
+                    h,
+                }
+            }
+        }));
     }
 }
 
@@ -132,11 +164,9 @@ impl ShellView {
     fn configure_size(&self, w: u32, h: u32) {
         match self {
             ShellView::Empty => (),
-            ShellView::Xdg(xdgview) => {
-                unsafe {
-                    wl::wlr_xdg_toplevel_set_size(xdgview.xdgsurface.xdg_surface, w, h);
-                }
-            }
+            ShellView::Xdg(xdgview) => unsafe {
+                wl::wlr_xdg_toplevel_set_size(xdgview.xdgsurface.xdg_surface, w, h);
+            },
         }
     }
 }
@@ -192,7 +222,8 @@ impl View {
     }
 
     pub fn configure_rect(self: Pin<&mut Self>, rect: &Rect) {
-        self.shell_surface.configure_size(rect.w.round() as u32, rect.h.round() as u32);
+        self.shell_surface
+            .configure_size(rect.w.round() as u32, rect.h.round() as u32);
         unsafe {
             let borrowed = self.get_unchecked_mut();
             borrowed.x = rect.x.round() as i32;
@@ -454,7 +485,7 @@ impl ViewChild {
 
 fn damage_view(server: &Server, view: &mut View, full: bool) {
     for output in server.outputs.iter() {
-        let o = output_coords(server, output);
+        let o = output_coords(server.output_layout, output);
         match &view.shell_surface {
             ShellView::Empty => (),
             ShellView::Xdg(v) => {
@@ -524,12 +555,12 @@ pub fn scaled_box(output: &Output, x: f64, y: f64, w: f64, h: f64) -> wl::wlr_bo
     }
 }
 
-pub fn output_coords(server: &Server, output: &Output) -> Point {
+pub fn output_coords(layout: *mut wl::wlr_output_layout, output: &Output) -> Point {
     let mut x = 0.0;
     let mut y = 0.0;
     unsafe {
         wl::wlr_output_layout_output_coords(
-            server.output_layout,
+            layout,
             output.wlr_output,
             &mut x,
             &mut y,
