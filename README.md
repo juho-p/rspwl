@@ -37,16 +37,6 @@ It's not ready yet.
 - make it easier to build
 - everything else
 
-### Contributing
-
-So you found this project's Github page and want to contribute in some way for
-some reason? You are allowed.
-
-Feel free to open issues of any kind (bug, feature request, feedback, question,
-...). Also feel free to create PRs (I'll try to review and decide if merging is
-fine "quickly", withing a week or so). Also feel free to... actually nothing is
-forbidden *yet*.
-
 ### Build instructions
 
 - You'll need recent'ish stable rust toolchain
@@ -64,12 +54,4 @@ default, if you are running under X or Wayland already, wlroots opens a window
 that contains the compositor under your WM, which is preferred way to test this
 at the moment.
 
-For reference, there are couple of dockerfiles that fetch the dependencies and
-test the build in Docker under `test-builds/`. For people running on Linux with
-very new packages, you'd do similar things as for the current
-`debian-experimental.Dockerfile` as an example (I use debian btw, so didn't yet
-include any other examples yet). For people running on Linux with very old
-packages, see the `debian.Dockerfile` as an example, where you'll most likely
-have to build recent versions of some of the dependencies.
-
-In short, for example: `sudo docker build -f test-builds/debian.Dockerfile .`
+See `test-builds/` directory for examples.
