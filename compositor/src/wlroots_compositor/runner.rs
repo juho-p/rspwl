@@ -29,7 +29,7 @@ unsafe fn begin_adventure() {
 
     let backend = wl::wlr_backend_autocreate(wl_display);
 
-    let renderer = wl::wlr_backend_get_renderer(backend);
+    let renderer = wl::wlr_renderer_autocreate(backend);
     if !wl::wlr_renderer_init_wl_display(renderer, wl_display) {
         panic!("Failed to initialize display");
     }
