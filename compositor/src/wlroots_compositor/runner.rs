@@ -10,7 +10,8 @@ use wl_sys as wl;
 
 use crate::{window_manager::{WindowManager, WindowRef}, wlroots_compositor::server::*};
 
-use super::{server::{NodeId, View}, wl_util::*};
+use super::{server::View, wl_util::*};
+use crate::types::NodeId;
 
 pub fn run_server() {
     unsafe {

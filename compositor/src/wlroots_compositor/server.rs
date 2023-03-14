@@ -7,13 +7,12 @@ use std::ptr;
 use wl_sys as wl;
 
 use crate::window_manager::{OutputInfo, WindowManager};
+use crate::types::NodeId;
 
 use super::wl_util::*;
 
 pub type OutputId = u8;
 pub type KeyboardId = u8;
-
-pub type NodeId = u32;
 
 static mut SERVER_GLOBAL: *mut Server = ptr::null_mut();
 
@@ -414,7 +413,9 @@ unsafe extern "C" fn surface_destroy(listener: *mut wl::wl_listener, _: *mut c_v
         SurfaceBehavior::Toplevel => {
             let server = &mut *server_ptr();
             info!("Top level surface destroyed");
-            server.wm.remove_node(view.id);
+            if let Err(e) = server.wm.remove_node(view.id) {
+                panic!("Remove node failed! {}", e);
+            }
         }
         SurfaceBehavior::Child => {
             let wlr_surface = it.surface;

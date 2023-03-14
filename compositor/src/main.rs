@@ -1,3 +1,4 @@
+mod types;
 mod tree;
 mod window_manager;
 mod wl_util;

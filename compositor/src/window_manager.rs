@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use crate::wlroots_compositor::{OutputId, Rect, View};
-use tree::NodeId;
+use crate::types::{Result, NodeId};
 
 type Node = tree::Node<Window>;
 pub type WindowRef<'a> = tree::LeafContentRef<'a, Window>;
@@ -121,14 +121,12 @@ impl WindowManager {
         new_leaf.id
     }
 
-    pub fn remove_node(&mut self, id: NodeId) {
-        // NOTE only view nodes are valid for this at the moment, others crash
+    pub fn remove_node(&mut self, id: NodeId) -> Result<()> {
+        let Some((workspace, node)) =
+            self.view_nodes.get(&id).and_then(|n| n.as_content().map(|w| (w.workspace, n)))
+            else { return Err(format!("No window for {}", id)); };
 
-        // TODO: unwrap bad
-
-        let node = self.view_nodes.get(&id).unwrap();
-
-        tree::remove_from_tree(node.clone()).unwrap();
+        self.workspaces[workspace].root = tree::remove_from_tree(node.clone())?;
 
         self.view_nodes.remove(&id);
         debug!("Remove {}", id);
@@ -136,6 +134,7 @@ impl WindowManager {
 
         // TODO only configure changed views
         self.configure_views();
+        Ok(())
     }
 
     fn configure_views(&mut self) {

@@ -4,9 +4,7 @@ use std::ops::Deref;
 use std::rc::{Rc, Weak};
 use std::sync::atomic;
 
-pub type NodeId = u32;
-
-type Result<Res> = std::result::Result<Res, String>;
+use crate::types::{Result, NodeId};
 
 static ID_GEN: atomic::AtomicU32 = atomic::AtomicU32::new(1);
 
@@ -192,7 +190,8 @@ fn split_from<T>(tree_node: Rc<Node<T>>, new_node: Rc<Node<T>>, dir: Dir) -> Rc<
     new_split
 }
 
-pub fn remove_from_tree<T>(node: Rc<Node<T>>) -> Result<()> {
+/// remove node from tree, return new (possibly changed) root
+pub fn remove_from_tree<T>(node: Rc<Node<T>>) -> Result<Rc<Node<T>>> {
     fn sibling<T>(s: &Split<T>, child: &Node<T>) -> Rc<Node<T>> {
         if s.a.id == child.id {
             s.b.clone()
@@ -212,14 +211,15 @@ pub fn remove_from_tree<T>(node: Rc<Node<T>>) -> Result<()> {
         match &*parent.n.borrow() {
             N::Split(split) => {
                 let sibling = sibling(&split, &node);
-                replace_node(parent, sibling);
+                replace_node(parent, sibling.clone());
+                Ok(sibling.root())
             }
             _ => invalid_tree_op(),
         }
     } else {
         *node.n.borrow_mut() = N::Placeholder;
+        Ok(node.root())
     }
-    Ok(())
 }
 
 fn replace_node<T>(from: &Rc<Node<T>>, to: Rc<Node<T>>) {
