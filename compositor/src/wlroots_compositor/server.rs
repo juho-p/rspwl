@@ -10,9 +10,10 @@ use crate::window_manager::{OutputInfo, WindowManager};
 
 use super::wl_util::*;
 
-pub type NodeId = u32;
 pub type OutputId = u8;
 pub type KeyboardId = u8;
+
+pub type NodeId = u32;
 
 static mut SERVER_GLOBAL: *mut Server = ptr::null_mut();
 
@@ -31,6 +32,7 @@ pub struct Server {
     pub wl_display: *mut wl::wl_display,
     pub backend: *mut wl::wlr_backend,
     pub renderer: *mut wl::wlr_renderer,
+    pub allocator: *mut wl::wlr_allocator,
 
     pub xdg_shell: *mut wl::wlr_xdg_shell,
 

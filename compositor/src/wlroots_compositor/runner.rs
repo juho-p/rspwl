@@ -4,14 +4,13 @@
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::{ffi::c_void};
+use std::ffi::c_void;
 
 use wl_sys as wl;
 
-use crate::tree::ViewRef;
-use crate::{window_manager::WindowManager, wlroots_compositor::server::*};
+use crate::{window_manager::{WindowManager, WindowRef}, wlroots_compositor::server::*};
 
-use super::{server::View, wl_util::*};
+use super::{server::{NodeId, View}, wl_util::*};
 
 pub fn run_server() {
     unsafe {
@@ -33,6 +32,8 @@ unsafe fn begin_adventure() {
     if !wl::wlr_renderer_init_wl_display(renderer, wl_display) {
         panic!("Failed to initialize display");
     }
+
+    let allocator = wl::wlr_allocator_autocreate(backend, renderer);
 
     let _compositor = wl::wlr_compositor_create(wl_display, renderer);
     let _ddm = wl::wlr_data_device_manager_create(wl_display);
@@ -58,6 +59,7 @@ unsafe fn begin_adventure() {
         wl_display,
         backend,
         renderer,
+        allocator,
 
         xdg_shell,
 
@@ -145,6 +147,8 @@ unsafe fn begin_adventure() {
 
 fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
     unsafe {
+        wl::wlr_output_init_render(wlr_output, server.allocator, server.renderer);
+
         if wl::wl_list_empty(&(*wlr_output).modes) == 0 {
             // only try to set mode if there are any
             let mode = wl::wlr_output_preferred_mode(wlr_output);
@@ -184,11 +188,9 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         return;
     }
 
-    let id = server.wm.new_node_id();
-
-    let view = unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) };
-
-    server.wm.add_view(view);
+    server.wm.add_view(|id| {
+        unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) }
+    });
 
     // TODO remove this
     invalidate_everything(server);
@@ -367,13 +369,13 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
     debug!("BEGIN RENDER");
-    for view in server.wm.views_for_render(output.id) {
-        match &view.shell_surface {
+    for window in server.wm.views_for_render(output.id) {
+        match &window.view.shell_surface {
             ShellView::Empty => info!("Empty view (WHY???)"),
             ShellView::Xdg(xdgview) => {
                 xdg_surface_for_each_surface(xdgview.xdgsurface.xdg_surface, |s, x, y| {
                     debug!("-surface");
-                    render_surface(s, x, y, server, output, &view, &now, damage);
+                    render_surface(s, x, y, server, output, &window.view, &now, damage);
                 })
             }
         }
@@ -421,7 +423,7 @@ fn cursor_pos(server: &Server) -> Point {
     }
 }
 unsafe fn handle_cursor_move(server: &mut Server, time: u32) {
-    if let Some((_, surface, p)) = find_view(server, cursor_pos(server)) {
+    if let Some((_, surface, p)) = find_window(server, cursor_pos(server)) {
         // Enter is kind of wrong after the first time, but wlroots promises to disregard those so
         // no matter
         wl::wlr_seat_pointer_notify_enter(server.seat, surface, p.x, p.y);
@@ -446,14 +448,14 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
     if event.state == wl::wlr_button_state_WLR_BUTTON_RELEASED {
         // TODO release button here (resize drag, etc)
     } else {
-        let to_focus = if let Some((view, surface, _)) = find_view(server, cursor_pos(server)) {
-            let focus_toplevel = match &view.shell_surface {
+        let to_focus = if let Some((window, surface, _)) = find_window(server, cursor_pos(server)) {
+            let focus_toplevel = match &window.view.shell_surface {
                 ShellView::Xdg(v) => Some(v.xdgsurface.xdg_surface),
                 ShellView::Empty => None,
                 // NOTE: doesn't really work for non xdg, but that's a problem for another day
             };
-            info!("clicked view {}", view.id);
-            let view_id = view.id;
+            info!("clicked view {}", window.view.id);
+            let view_id = window.view.id;
 
             focus_toplevel.map(|x| (view_id, surface, x))
         } else {
@@ -461,8 +463,8 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
             None
         };
 
-        unsafe {
-            if let Some((view_id, surface, xdgsurface)) = to_focus {
+        if let Some((view_id, surface, xdgsurface)) = to_focus {
+            unsafe {
                 focus_xdg(server, xdgsurface, view_id, surface);
             }
         }
@@ -661,21 +663,22 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
     }
 }
 
-fn find_view<'a>(
+// TODO move?
+fn find_window<'a>(
     server: &'a Server,
     pos: Point,
 ) -> Option<(
-    ViewRef,
+    WindowRef,
     *mut wl::wlr_surface,
     Point,
 )> {
     let mut views = server.wm.views_for_finding();
 
-    views.find_map(|view| match &view.shell_surface {
+    views.find_map(|content| match &content.view.shell_surface {
         ShellView::Xdg(xdgview) => {
             let xdg_surface = xdgview.xdgsurface.xdg_surface;
-            let sx = pos.x - view.rect.x as f64;
-            let sy = pos.y - view.rect.y as f64;
+            let sx = pos.x - content.view.rect.x as f64;
+            let sy = pos.y - content.view.rect.y as f64;
             let mut sub = Point { x: 0.0, y: 0.0 };
             let surface = unsafe {
                 wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
@@ -683,7 +686,7 @@ fn find_view<'a>(
             if surface.is_null() {
                 None
             } else {
-                Some((view, surface, sub))
+                Some((content, surface, sub))
             }
         }
         ShellView::Empty => None,
