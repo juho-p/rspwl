@@ -4,8 +4,8 @@ use std::iter::Iterator;
 use std::pin::Pin;
 use std::rc::Rc;
 
+use crate::types::{NodeId, Result};
 use crate::wlroots_compositor::{OutputId, Rect, View};
-use crate::types::{Result, NodeId};
 
 type Node = tree::Node<Window>;
 pub type WindowRef<'a> = tree::LeafContentRef<'a, Window>;
@@ -52,10 +52,7 @@ impl WindowManager {
     }
 
     // TODO ren
-    pub fn views_for_render<'a>(
-        &'a self,
-        _output: OutputId,
-    ) -> impl Iterator<Item = WindowRef> {
+    pub fn views_for_render<'a>(&'a self, _output: OutputId) -> impl Iterator<Item = WindowRef> {
         // TODO check output
         self.mru_view.iter().map(|id| {
             self.view_nodes
@@ -97,9 +94,7 @@ impl WindowManager {
             None => self.workspaces[0].root.clone(),
         };
 
-        let workspace = active_node.as_content()
-            .map(|v| v.workspace)
-            .unwrap_or(0);
+        let workspace = active_node.as_content().map(|v| v.workspace).unwrap_or(0);
 
         let (parent, new_leaf) = tree::add_leaf(
             active_node.clone(),
@@ -107,7 +102,8 @@ impl WindowManager {
                 view: create_view(id),
                 workspace,
             },
-            split_dir(active_node));
+            split_dir(active_node),
+        );
 
         self.workspaces[workspace].root = parent.root();
 
@@ -183,7 +179,7 @@ fn views_rect(node: Rc<Node>) -> Option<Rect> {
 fn split_dir(node: Rc<Node>) -> tree::Dir {
     if let Some(rect) = views_rect(node.clone()) {
         if rect.h > rect.w {
-            return tree::Dir::H
+            return tree::Dir::H;
         }
     }
     tree::Dir::V
@@ -192,45 +188,43 @@ fn split_dir(node: Rc<Node>) -> tree::Dir {
 fn configure_views(root: Rc<Node>, rect: Rect) {
     use tree::Dir;
     match &mut *root.n.borrow_mut() {
-        tree::N::Placeholder => { }
-        tree::N::Split(s) => {
-            match s.dir {
-                Dir::H => {
-                    configure_views(
-                        s.a.clone(),
-                        Rect {
-                            h: rect.h / 2.0,
-                            ..rect
-                        },
-                    );
-                    configure_views(
-                        s.b.clone(),
-                        Rect {
-                            h: rect.h / 2.0,
-                            y: rect.y + rect.h / 2.0,
-                            ..rect
-                        },
-                    );
-                }
-                Dir::V => {
-                    configure_views(
-                        s.a.clone(),
-                        Rect {
-                            w: rect.w / 2.0,
-                            ..rect
-                        },
-                    );
-                    configure_views(
-                        s.b.clone(),
-                        Rect {
-                            w: rect.w / 2.0,
-                            x: rect.x + rect.w / 2.0,
-                            ..rect
-                        },
-                    );
-                }
+        tree::N::Placeholder => {}
+        tree::N::Split(s) => match s.dir {
+            Dir::H => {
+                configure_views(
+                    s.a.clone(),
+                    Rect {
+                        h: rect.h / 2.0,
+                        ..rect
+                    },
+                );
+                configure_views(
+                    s.b.clone(),
+                    Rect {
+                        h: rect.h / 2.0,
+                        y: rect.y + rect.h / 2.0,
+                        ..rect
+                    },
+                );
             }
-        }
+            Dir::V => {
+                configure_views(
+                    s.a.clone(),
+                    Rect {
+                        w: rect.w / 2.0,
+                        ..rect
+                    },
+                );
+                configure_views(
+                    s.b.clone(),
+                    Rect {
+                        w: rect.w / 2.0,
+                        x: rect.x + rect.w / 2.0,
+                        ..rect
+                    },
+                );
+            }
+        },
         tree::N::Leaf(leaf) => {
             leaf.content.view.as_mut().configure_rect(&rect);
         }

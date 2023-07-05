@@ -6,8 +6,8 @@ use std::ptr;
 
 use wl_sys as wl;
 
-use crate::window_manager::{OutputInfo, WindowManager};
 use crate::types::NodeId;
+use crate::window_manager::{OutputInfo, WindowManager};
 
 use super::wl_util::*;
 
@@ -28,6 +28,7 @@ pub unsafe fn set_server(server: *mut Server) {
 }
 
 pub struct Server {
+    pub wayland_display_name: String,
     pub wl_display: *mut wl::wl_display,
     pub backend: *mut wl::wlr_backend,
     pub renderer: *mut wl::wlr_renderer,
@@ -93,6 +94,28 @@ impl Server {
                 },
             }
         }));
+    }
+
+    pub fn handle_key_binding(&mut self, keysym: u32, modifiers: u32) -> bool {
+        if modifiers & wl::wlr_keyboard_modifier_WLR_MODIFIER_ALT != 0
+            && keysym == wl::XKB_KEY_Return
+        {
+            println!("Spawn shell");
+            let ok = std::process::Command::new("foot")
+                .env("WAYLAND_DISPLAY", &self.wayland_display_name)
+                .spawn()
+                .is_ok();
+
+            if !ok {
+                println!("Failed to start foot");
+            }
+            true
+        } else if modifiers & wl::wlr_keyboard_modifier_WLR_MODIFIER_ALT != 0 {
+            dbg!(keysym);
+            false
+        } else {
+            false
+        }
     }
 }
 

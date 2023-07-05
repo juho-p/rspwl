@@ -54,12 +54,10 @@ fn main() {
         .allowlist_function("wl.*")
         .allowlist_function("pixman.*")
         .allowlist_function("xkb_.*")
-
         // bit hairy, but deal with it
         .allowlist_function("clock_gettime")
         .allowlist_var("CLOCK_MONOTONIC")
         .allowlist_var("XKB_.*")
-
         .allowlist_type("wl.*")
         .allowlist_type("pixman.*")
         .allowlist_type("xkb_.*")
@@ -70,7 +68,9 @@ fn main() {
                 .map(|x| x.to_string()),
         );
 
-    let bindings = builder.generate().expect("Failed to generate Rust bindings");
+    let bindings = builder
+        .generate()
+        .expect("Failed to generate Rust bindings");
 
     bindings
         .write_to_file(out_path.join("bindings.rs"))

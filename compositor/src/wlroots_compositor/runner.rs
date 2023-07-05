@@ -1,14 +1,17 @@
 // unsafe {
 //     lets goooo
 
+use std::ffi::{c_void, CStr};
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::ffi::c_void;
 
 use wl_sys as wl;
 
-use crate::{window_manager::{WindowManager, WindowRef}, wlroots_compositor::server::*};
+use crate::{
+    window_manager::{WindowManager, WindowRef},
+    wlroots_compositor::server::*,
+};
 
 use super::{server::View, wl_util::*};
 use crate::types::NodeId;
@@ -54,9 +57,15 @@ unsafe fn begin_adventure() {
         panic!("Failed to create socket for the display");
     }
 
+    let wayland_display_name = CStr::from_ptr(socket)
+        .to_str()
+        .expect("Invalid socket name")
+        .to_string();
+
     let seat = wl::wlr_seat_create(wl_display, cstring!("seat0"));
 
     let mut server = Server {
+        wayland_display_name,
         wl_display,
         backend,
         renderer,
@@ -125,20 +134,15 @@ unsafe fn begin_adventure() {
 
     set_server(&mut server);
 
-    let socket = wl::wl_display_add_socket_auto(server.wl_display);
-    if socket.is_null() {
+    if !wl::wlr_backend_start(server.backend) {
         wl::wlr_backend_destroy(server.backend);
+        wl::wl_display_destroy(server.wl_display);
     } else {
-        if !wl::wlr_backend_start(server.backend) {
-            wl::wlr_backend_destroy(server.backend);
-            wl::wl_display_destroy(server.wl_display);
-        } else {
-            println!("Run display");
-            wl::wl_display_run(server.wl_display);
+        println!("Run display");
+        wl::wl_display_run(server.wl_display);
 
-            wl::wl_display_destroy_clients(server.wl_display);
-            wl::wl_display_destroy(server.wl_display);
-        }
+        wl::wl_display_destroy_clients(server.wl_display);
+        wl::wl_display_destroy(server.wl_display);
     }
 
     set_server(ptr::null_mut());
@@ -189,9 +193,9 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         return;
     }
 
-    server.wm.add_view(|id| {
-        unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) }
-    });
+    server
+        .wm
+        .add_view(|id| unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) });
 
     // TODO remove this
     invalidate_everything(server);
@@ -633,29 +637,35 @@ fn handle_modifiers(server: &mut Server, _: &mut (), id: u8) {
 }
 
 fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u8) {
-    if let Some(keyboard) = server.keyboards.iter().find(|x| x.id == id) {
-        // TODO handle meaningful keys here. like tinywl would do:
-        // /* Translate libinput keycode -> xkbcommon */
-        // uint32_t keycode = event->keycode + 8;
-        // /* Get a list of keysyms based on the keymap for this keyboard */
-        // const xkb_keysym_t *syms;
-        // int nsyms = xkb_state_key_get_syms(
-        //         keyboard->device->keyboard->xkb_state, keycode, &syms);
+    let Some(keyboard) = server.keyboards.iter().find(|x| x.id == id) else {
+        println!("Invalid keyboard {id}!");
+        return;
+    };
 
-        // bool handled = false;
-        // uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->device->keyboard);
-        // if ((modifiers & WLR_MODIFIER_ALT) && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-        //     /* If alt is held down and this button was _pressed_, we attempt to
-        //      * process it as a compositor keybinding. */
-        //     for (int i = 0; i < nsyms; i++) {
-        //         handled = handle_keybinding(server, syms[i]);
-        //     }
-        // }
-
-        // NOTE: when not handled by some shortcut system, pass it to seat
+    let mut keybind_handled = false;
+    if event.state == wl::wl_keyboard_key_state_WL_KEYBOARD_KEY_STATE_PRESSED {
         unsafe {
-            println!("Handle key");
             wl::wlr_seat_set_keyboard(server.seat, keyboard.device);
+            let device_keyboard = (*keyboard.device).__bindgen_anon_1.keyboard;
+            let modifiers = wl::wlr_keyboard_get_modifiers(device_keyboard);
+            let mut syms: *const wl::xkb_keysym_t = ptr::null_mut();
+            let nsyms = wl::xkb_state_key_get_syms(
+                (*device_keyboard).xkb_state,
+                event.keycode + 8,
+                &mut syms as *mut *const wl::xkb_keysym_t,
+            );
+            for index in 0..nsyms {
+                let sym = syms.offset(index as isize);
+                keybind_handled = server.handle_key_binding(*sym, modifiers) || keybind_handled;
+            }
+        }
+    }
+
+    if keybind_handled {
+        println!("Handled key binding");
+    } else {
+        // pass it to the seat
+        unsafe {
             wl::wlr_seat_keyboard_notify_key(
                 server.seat,
                 event.time_msec,
@@ -670,11 +680,7 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
 fn find_window<'a>(
     server: &'a Server,
     pos: Point,
-) -> Option<(
-    WindowRef,
-    *mut wl::wlr_surface,
-    Point,
-)> {
+) -> Option<(WindowRef, *mut wl::wlr_surface, Point)> {
     let mut views = server.wm.views_for_finding();
 
     views.find_map(|content| match &content.view.shell_surface {

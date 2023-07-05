@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::rc::{Rc, Weak};
 use std::sync::atomic;
 
-use crate::types::{Result, NodeId};
+use crate::types::{NodeId, Result};
 
 static ID_GEN: atomic::AtomicU32 = atomic::AtomicU32::new(1);
 
@@ -34,7 +34,11 @@ impl<T> Iterator for DescendantIter<T> {
     type Item = Rc<Node<T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let curr = if let Some(x) = &self.next { x.clone() } else { return None };
+        let curr = if let Some(x) = &self.next {
+            x.clone()
+        } else {
+            return None;
+        };
 
         self.next = match &*curr.n.borrow() {
             N::Placeholder => None,
@@ -55,9 +59,7 @@ impl<T> Iterator for DescendantIter<T> {
                 }
                 new_next
             }
-            N::Split(split) => {
-                Some(split.a.clone())
-            }
+            N::Split(split) => Some(split.a.clone()),
         };
 
         Some(curr)
@@ -79,16 +81,14 @@ impl<T> Node<T> {
 
     pub fn self_and_descendants(self: Rc<Node<T>>) -> impl Iterator<Item = Rc<Node<T>>> {
         DescendantIter {
-            next: Some(self.clone())
+            next: Some(self.clone()),
         }
     }
 
     pub fn as_content(&self) -> Option<LeafContentRef<T>> {
         match &*self.n.borrow() {
-            N::Leaf(_) => Some(LeafContentRef {
-                n: self.n.borrow(),
-            }),
-            _ => None
+            N::Leaf(_) => Some(LeafContentRef { n: self.n.borrow() }),
+            _ => None,
         }
     }
 }
@@ -142,20 +142,27 @@ pub fn create_root<T>() -> Rc<Node<T>> {
     })
 }
 
-pub fn add_leaf<T>(target_node: Rc<Node<T>>, content: impl FnOnce(NodeId) -> T, split_dir: Dir) -> (Rc<Node<T>>, Rc<Node<T>>) {
+pub fn add_leaf<T>(
+    target_node: Rc<Node<T>>,
+    content: impl FnOnce(NodeId) -> T,
+    split_dir: Dir,
+) -> (Rc<Node<T>>, Rc<Node<T>>) {
     let is_placeholder = match &*target_node.n.borrow() {
         N::Placeholder => true,
         _ => false,
     };
 
-
     if is_placeholder {
-        let new_n = N::Leaf(Leaf { content: content(target_node.id) });
+        let new_n = N::Leaf(Leaf {
+            content: content(target_node.id),
+        });
         *target_node.n.borrow_mut() = new_n;
         (target_node.clone(), target_node)
     } else {
         let id = id_gen();
-        let new_n = N::Leaf(Leaf { content: content(id) });
+        let new_n = N::Leaf(Leaf {
+            content: content(id),
+        });
         let new_node = Rc::new(Node {
             id,
             parent: RefCell::new(Some(Rc::downgrade(&target_node))),
@@ -262,15 +269,44 @@ fn test_add() {
         N::Split(_) => true,
         _ => false,
     });
-    assert_eq!(vec![firstsplit.id, first.id, a.id], firstsplit.clone().self_and_descendants().map(|x| x.id).collect::<Vec<NodeId>>());
+    assert_eq!(
+        vec![firstsplit.id, first.id, a.id],
+        firstsplit
+            .clone()
+            .self_and_descendants()
+            .map(|x| x.id)
+            .collect::<Vec<NodeId>>()
+    );
 
     let (secondsplit, b) = add_leaf(firstsplit.clone(), |_| "b", Dir::H);
     assert_eq!(secondsplit.id, a.clone().root().id);
-    assert_eq!(vec![secondsplit.id, firstsplit.id, first.id, a.id, b.id], secondsplit.clone().self_and_descendants().map(|x| x.id).collect::<Vec<NodeId>>());
+    assert_eq!(
+        vec![secondsplit.id, firstsplit.id, first.id, a.id, b.id],
+        secondsplit
+            .clone()
+            .self_and_descendants()
+            .map(|x| x.id)
+            .collect::<Vec<NodeId>>()
+    );
 
     let (thirdsplit, c) = add_leaf(b.clone(), |_| "c", Dir::H);
     assert_eq!(secondsplit.id, a.clone().root().id);
-    assert_eq!(vec![secondsplit.id, firstsplit.id, first.id, a.id, thirdsplit.id, b.id, c.id], secondsplit.clone().self_and_descendants().map(|x| x.id).collect::<Vec<NodeId>>());
+    assert_eq!(
+        vec![
+            secondsplit.id,
+            firstsplit.id,
+            first.id,
+            a.id,
+            thirdsplit.id,
+            b.id,
+            c.id
+        ],
+        secondsplit
+            .clone()
+            .self_and_descendants()
+            .map(|x| x.id)
+            .collect::<Vec<NodeId>>()
+    );
 }
 
 #[test]
@@ -285,7 +321,13 @@ fn test_remove() {
     remove_from_tree(a).unwrap();
 
     assert_eq!(b.clone().root().id, root1.id);
-    assert_eq!(vec![root1.id, first.id, b.id], root1.self_and_descendants().map(|x| x.id).collect::<Vec<NodeId>>());
+    assert_eq!(
+        vec![root1.id, first.id, b.id],
+        root1
+            .self_and_descendants()
+            .map(|x| x.id)
+            .collect::<Vec<NodeId>>()
+    );
 
     remove_from_tree(first).unwrap();
 
