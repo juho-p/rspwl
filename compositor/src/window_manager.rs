@@ -77,7 +77,7 @@ impl WindowManager {
     }
 
     pub fn touch_node(&mut self, id: NodeId) {
-        debug!("Touch {}", id);
+        println!("Touch {}", id);
         self.remove_from_mru(id);
         self.mru_view.push(id);
     }
@@ -113,7 +113,7 @@ impl WindowManager {
 
         self.view_nodes.insert(new_leaf.id, new_leaf.clone());
         self.mru_view.push(new_leaf.id);
-        debug!("Added {}", new_leaf.id);
+        println!("Added {}", new_leaf.id);
 
         // TODO only configure changed views
         self.configure_views();
@@ -129,7 +129,7 @@ impl WindowManager {
         self.workspaces[workspace].root = tree::remove_from_tree(node.clone())?;
 
         self.view_nodes.remove(&id);
-        debug!("Remove {}", id);
+        println!("Remove {}", id);
         self.remove_from_mru(id);
 
         // TODO only configure changed views
@@ -138,12 +138,12 @@ impl WindowManager {
     }
 
     fn configure_views(&mut self) {
-        debug!("Start configure");
+        println!("Start configure");
         // TODO handle workspaces
         let ws = &mut self.workspaces[0];
         let rect = ws.rect.clone();
         configure_views(ws.root.clone(), rect);
-        debug!("End configure");
+        println!("End configure");
     }
 
     pub fn update_outputs(&mut self, outputs: impl Iterator<Item = OutputInfo>) {

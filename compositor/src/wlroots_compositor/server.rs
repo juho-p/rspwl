@@ -81,7 +81,7 @@ impl Server {
 
             let (w, h) = unsafe { ((*o.wlr_output).width as f32, (*o.wlr_output).height as f32) };
 
-            debug!("output {}: {} {} {} {}", o.id, coords.x, coords.y, w, h);
+            println!("output {}: {} {} {} {}", o.id, coords.x, coords.y, w, h);
 
             OutputInfo {
                 id: o.id,
@@ -327,7 +327,7 @@ unsafe extern "C" fn xdg_surface_map(listener: *mut wl::wl_listener, _: *mut c_v
 
     it.mapped = true;
 
-    info!("Mapped {}", view.id);
+    println!("Mapped {}", view.id);
 
     damage_view(&*server_ptr(), view, true);
 }
@@ -335,7 +335,7 @@ unsafe extern "C" fn xdg_surface_unmap(listener: *mut wl::wl_listener, _: *mut c
     let it = &mut *container_of!(XdgSurface, unmap, listener);
     let view = &mut *it.surface.view;
 
-    info!("Unmapped {}", view.id);
+    println!("Unmapped {}", view.id);
 
     damage_view(&*server_ptr(), view, true);
 }
@@ -343,7 +343,7 @@ unsafe extern "C" fn xdg_surface_new_popup(listener: *mut wl::wl_listener, data:
     let it = &mut *container_of!(XdgSurface, new_popup, listener);
     let view = &mut *it.surface.view;
 
-    info!("New popup");
+    println!("New popup");
     let popup = data as *mut wl::wlr_xdg_popup;
     let popup = &mut *popup;
     let xdg_surface = &mut *popup.base;
@@ -402,7 +402,7 @@ impl Drop for Surface {
 unsafe extern "C" fn surface_commit(listener: *mut wl::wl_listener, _: *mut c_void) {
     let it = &mut *container_of!(Surface, commit, listener);
     let view = &mut *it.view;
-    info!("commit");
+    println!("commit");
     damage_view(&*server_ptr(), view, false);
 }
 unsafe extern "C" fn surface_destroy(listener: *mut wl::wl_listener, _: *mut c_void) {
@@ -412,7 +412,7 @@ unsafe extern "C" fn surface_destroy(listener: *mut wl::wl_listener, _: *mut c_v
     match it.destroy_behaviour {
         SurfaceBehavior::Toplevel => {
             let server = &mut *server_ptr();
-            info!("Top level surface destroyed");
+            println!("Top level surface destroyed");
             if let Err(e) = server.wm.remove_node(view.id) {
                 panic!("Remove node failed! {}", e);
             }
@@ -431,7 +431,7 @@ unsafe extern "C" fn surface_new_subsurface(listener: *mut wl::wl_listener, data
     let it = &mut *container_of!(Surface, new_subsurface, listener);
     let view = &mut *it.view;
 
-    info!("New subsurface");
+    println!("New subsurface");
 
     let subsurface = data as *mut wl::wlr_subsurface;
     let surface = (*subsurface).surface;

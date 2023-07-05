@@ -6,7 +6,4 @@ edition = "2021"
 [dependencies]
 wl-sys = { path = "../wl-sys" }
 
-log = "0.4"
-pretty_env_logger = "0.3"
-
 memoffset = "0.6"

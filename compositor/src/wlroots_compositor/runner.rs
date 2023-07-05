@@ -133,7 +133,7 @@ unsafe fn begin_adventure() {
             wl::wlr_backend_destroy(server.backend);
             wl::wl_display_destroy(server.wl_display);
         } else {
-            debug!("Run display");
+            println!("Run display");
             wl::wl_display_run(server.wl_display);
 
             wl::wl_display_destroy_clients(server.wl_display);
@@ -185,7 +185,7 @@ fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
 
 fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _: ()) {
     if xdg_surface.role != wl::wlr_xdg_surface_role_WLR_XDG_SURFACE_ROLE_TOPLEVEL {
-        info!("xdg-shell popup (this log is just noise)");
+        println!("xdg-shell popup (this log is just noise)");
         return;
     }
 
@@ -201,7 +201,7 @@ unsafe extern "C" fn damage_handle_frame(listener: *mut wl::wl_listener, _: *mut
     let output = &mut *container_of!(Output, damage_frame, listener);
 
     if !(*output.wlr_output).enabled {
-        info!("Output disabled");
+        println!("Output disabled");
         return;
     }
 
@@ -303,7 +303,7 @@ unsafe fn render_surface(
                 width: rect.x2 - rect.x1,
                 height: rect.y2 - rect.y1,
             };
-            debug!("- RECT {:?}", scissor_box);
+            println!("- RECT {:?}", scissor_box);
 
             wl::wlr_output_transformed_resolution(output.wlr_output, &mut ow, &mut oh);
             let transform = wl::wlr_output_transform_invert((*output.wlr_output).transform);
@@ -369,13 +369,13 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     //let color = [0.3, 0.3, 0.3, 1.0];
     //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
-    debug!("BEGIN RENDER");
+    println!("BEGIN RENDER");
     for window in server.wm.views_for_render(output.id) {
         match &window.view.shell_surface {
-            ShellView::Empty => info!("Empty view (WHY???)"),
+            ShellView::Empty => println!("Empty view (WHY???)"),
             ShellView::Xdg(xdgview) => {
                 xdg_surface_for_each_surface(xdgview.xdgsurface.xdg_surface, |s, x, y| {
-                    debug!("-surface");
+                    println!("-surface");
                     render_surface(s, x, y, server, output, &window.view, &now, damage);
                 })
             }
@@ -388,7 +388,7 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     }
     wl::wlr_renderer_scissor(server.renderer, ptr::null_mut());
     wl::wlr_output_render_software_cursors(output.wlr_output, ptr::null_mut());
-    debug!("END RENDER");
+    println!("END RENDER");
 
     wl::wlr_renderer_end(renderer);
 }
@@ -455,12 +455,12 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
                 ShellView::Empty => None,
                 // NOTE: doesn't really work for non xdg, but that's a problem for another day
             };
-            info!("clicked view {}", window.view.id);
+            println!("clicked view {}", window.view.id);
             let view_id = window.view.id;
 
             focus_toplevel.map(|x| (view_id, surface, x))
         } else {
-            info!("clicked outside view");
+            println!("clicked outside view");
             None
         };
 
@@ -562,7 +562,7 @@ fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: (
                 wl::wlr_seat_set_keyboard(server.seat, device);
             }
 
-            info!("Add keyboard");
+            println!("Add keyboard");
             server.keyboards.push(keyboard);
         } else {
             eprintln!("Can't add keyboard. WHY DO YOU HAVE SO MANY KEYBOARDS?");
@@ -593,7 +593,7 @@ fn handle_request_cursor(
     unsafe {
         let focused_client = (*server.seat).pointer_state.focused_client;
         if focused_client == event.seat_client {
-            info!("Focused client requests cursor");
+            println!("Focused client requests cursor");
             wl::wlr_cursor_set_surface(
                 server.cursor,
                 event.surface,
@@ -601,7 +601,7 @@ fn handle_request_cursor(
                 event.hotspot_y,
             );
         } else {
-            info!("Unfocused client TRIED to request cursor");
+            println!("Unfocused client TRIED to request cursor");
         }
     }
 }
@@ -652,7 +652,7 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
 
         // NOTE: when not handled by some shortcut system, pass it to seat
         unsafe {
-            info!("Handle key");
+            println!("Handle key");
             wl::wlr_seat_set_keyboard(server.seat, keyboard.device);
             wl::wlr_seat_keyboard_notify_key(
                 server.seat,
