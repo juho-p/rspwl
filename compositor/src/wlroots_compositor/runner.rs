@@ -497,16 +497,18 @@ unsafe fn focus_xdg(
     surface: *mut wl::wlr_surface,
 ) {
     // We have mut ref to server and ref to view. breaks borrow checker. hope Rust won't mind
-    println!("set focus");
     let prev_surface = (*server.seat).keyboard_state.focused_surface;
+    println!("set focus {:?}", prev_surface);
     if prev_surface == surface {
         return;
     }
-    if !prev_surface.is_null() {
+    if !prev_surface.is_null() && wl::wlr_surface_is_xdg_surface(prev_surface) {
         let prev = wl::wlr_xdg_surface_from_wlr_surface(prev_surface);
         if !prev.is_null() {
             wl::wlr_xdg_toplevel_set_activated(prev, false);
         }
+    } else {
+        println!("  prev was not xdg surface");
     }
 
     let keyboard = &mut *wl::wlr_seat_get_keyboard(server.seat);
