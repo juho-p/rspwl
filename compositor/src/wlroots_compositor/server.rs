@@ -6,7 +6,8 @@ use std::ptr;
 
 use wl_sys as wl;
 
-use crate::types::NodeId;
+use crate::tree::{Direction, self};
+use crate::types::{NodeId, Rect};
 use crate::window_manager::{OutputInfo, WindowManager};
 
 use super::wl_util::*;
@@ -97,24 +98,119 @@ impl Server {
     }
 
     pub fn handle_key_binding(&mut self, keysym: u32, modifiers: u32) -> bool {
-        if modifiers & wl::wlr_keyboard_modifier_WLR_MODIFIER_ALT != 0
-            && keysym == wl::XKB_KEY_Return
-        {
-            println!("Spawn shell");
-            let ok = std::process::Command::new("foot")
-                .env("WAYLAND_DISPLAY", &self.wayland_display_name)
-                .spawn()
-                .is_ok();
+        // Just some hardcoded keys for now
 
-            if !ok {
-                println!("Failed to start foot");
+        let is_alt = modifiers & wl::wlr_keyboard_modifier_WLR_MODIFIER_ALT != 0;
+
+        fn handle_hjkl(server: &mut Server, dir: Direction, swap: bool) {
+            let Some(neighbor) = server.wm.neighbor(dir) else { return; };
+            if swap {
+                if let Some(active) = server.wm.active_node() {
+                    println!("swap {} {}", active.id, neighbor.id);
+                    tree::swap(active, neighbor);
+                    server.invalidate_everything();
+                }
+            } else {
+                println!("activate {}", neighbor.id);
+                let viewref = server.wm.find_view(neighbor.id).unwrap();
+                let (view, _) = viewref.content_and_rect();
+                match &view.shell_surface {
+                    ShellView::Empty => (),
+                    ShellView::Xdg(xdg) => unsafe {
+                        let toplevel = xdg.xdgsurface.xdg_surface;
+                        std::mem::drop(viewref);
+                        server.focus_view(toplevel, neighbor.id, ptr::null_mut())
+                    },
+                }
             }
-            true
-        } else if modifiers & wl::wlr_keyboard_modifier_WLR_MODIFIER_ALT != 0 {
+            server.wm.configure_views();
+        }
+
+        if is_alt {
             dbg!(keysym);
-            false
+            if keysym == wl::XKB_KEY_Return {
+                println!("Spawn shell");
+                let ok = std::process::Command::new("foot")
+                    .env("WAYLAND_DISPLAY", &self.wayland_display_name)
+                    .spawn()
+                    .is_ok();
+
+                if !ok {
+                    println!("Failed to start foot");
+                }
+                true
+            } else if keysym == wl::XKB_KEY_h {
+                handle_hjkl(self, Direction::Left, false);
+                true
+            } else if keysym == wl::XKB_KEY_j {
+                handle_hjkl(self, Direction::Down, false);
+                true
+            } else if keysym == wl::XKB_KEY_k {
+                handle_hjkl(self, Direction::Up, false);
+                true
+            } else if keysym == wl::XKB_KEY_l {
+                handle_hjkl(self, Direction::Right, false);
+                true
+            } else if keysym == wl::XKB_KEY_H {
+                handle_hjkl(self, Direction::Left, true);
+                true
+            } else if keysym == wl::XKB_KEY_J {
+                handle_hjkl(self, Direction::Down, true);
+                true
+            } else if keysym == wl::XKB_KEY_K {
+                handle_hjkl(self, Direction::Up, true);
+                true
+            } else if keysym == wl::XKB_KEY_L {
+                handle_hjkl(self, Direction::Right, true);
+                true
+            } else {
+                false
+            }
         } else {
             false
+        }
+    }
+
+    pub unsafe fn focus_view(
+        &mut self,
+        xdg_surface: *mut wl::wlr_xdg_surface,
+        view_id: NodeId,
+        surface: *mut wl::wlr_surface,
+    ) {
+        // We have mut ref to server and ref to view. breaks borrow checker. hope Rust won't mind
+        let prev_surface = (*self.seat).keyboard_state.focused_surface;
+        println!("set focus {:?}", prev_surface);
+        if prev_surface == surface {
+            return;
+        }
+        if !prev_surface.is_null() && wl::wlr_surface_is_xdg_surface(prev_surface) {
+            let prev = wl::wlr_xdg_surface_from_wlr_surface(prev_surface);
+            if !prev.is_null() {
+                wl::wlr_xdg_toplevel_set_activated(prev, false);
+            }
+        } else {
+            println!("  prev was not xdg surface");
+        }
+
+        let keyboard = &mut *wl::wlr_seat_get_keyboard(self.seat);
+
+        wl::wlr_xdg_toplevel_set_activated(xdg_surface, true);
+        wl::wlr_seat_keyboard_notify_enter(
+            self.seat,
+            (*xdg_surface).surface,
+            keyboard.keycodes.as_mut_ptr(),
+            keyboard.num_keycodes,
+            &mut keyboard.modifiers,
+        );
+
+        self.wm.touch_node(view_id);
+    }
+
+    pub fn invalidate_everything(&self) {
+        for output in self.outputs.iter() {
+            unsafe {
+                wl::wlr_output_damage_add_whole(output.damage);
+            }
         }
     }
 }
@@ -126,6 +222,7 @@ pub struct Output {
     pub damage: *mut wl::wlr_output_damage,
     pub damage_frame: wl::wl_listener,
     pub destroy: Listener<(), OutputId>,
+    pub size: (i32, i32),
 
     pub _pin: PhantomPinned,
 }
@@ -193,22 +290,14 @@ impl ShellView {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
 pub struct View {
     pub id: NodeId,
 
     pub shell_surface: ShellView,
 
-    pub rect: Rect,
-
     children: Vec<Pin<Box<ViewChild>>>,
+
+    pos: (f32, f32),
 
     _pin: PhantomPinned,
 }
@@ -221,13 +310,8 @@ impl View {
         let mut view = Box::pin(View {
             id,
             shell_surface: ShellView::Empty,
-            rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 0.0,
-                h: 0.0,
-            },
             children: Vec::new(),
+            pos: (0.0, 0.0),
 
             _pin: PhantomPinned,
         });
@@ -249,9 +333,10 @@ impl View {
     pub fn configure_rect(self: Pin<&mut Self>, rect: &Rect) {
         self.shell_surface
             .configure_size(rect.w.round() as u32, rect.h.round() as u32);
+
         unsafe {
             let borrowed = self.get_unchecked_mut();
-            borrowed.rect = rect.clone();
+            borrowed.pos = (rect.x, rect.y);
         }
     }
 }
@@ -517,8 +602,8 @@ fn damage_view(server: &Server, view: &mut View, full: bool) {
             ShellView::Xdg(v) => {
                 let xdg_surface = v.xdgsurface.xdg_surface;
                 xdg_surface_for_each_surface(xdg_surface, |s, x, y| {
-                    let ox = o.x + view.rect.x as f64 + x as f64;
-                    let oy = o.y + view.rect.y as f64 + y as f64;
+                    let ox = o.x + view.pos.0 as f64 + x as f64;
+                    let oy = o.y + view.pos.1 as f64 + y as f64;
                     damage_surface_at(output, s, ox, oy, full);
                 });
             }
@@ -545,7 +630,7 @@ fn damage_surface_at(
         unsafe {
             if wl::pixman_region32_not_empty(&mut surface.buffer_damage) != 0 {
                 // figuring out the damage:
-                // lets just do what sway wouild
+                // lets just do what sway would
                 let scale = (*output.wlr_output).scale;
 
                 let mut dmg = MaybeUninit::uninit();

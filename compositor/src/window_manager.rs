@@ -1,14 +1,28 @@
-use crate::tree;
+use crate::tree::{self, Direction};
+use std::cell::Ref;
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use crate::types::{NodeId, Result};
-use crate::wlroots_compositor::{OutputId, Rect, View};
+use crate::types::{NodeId, Result, Rect};
+use crate::wlroots_compositor::{OutputId, View};
 
 type Node = tree::Node<Window>;
-pub type WindowRef<'a> = tree::LeafContentRef<'a, Window>;
+
+pub struct ViewRef<'a> {
+    n: Ref<'a, tree::N<Window>>,
+    rect: Ref<'a, Rect>,
+}
+
+impl<'a> ViewRef<'a> {
+    pub fn content_and_rect(&'a self) -> (&'a Pin<Box<View>>, &'a Rect) {
+        match &*self.n {
+            tree::N::Leaf(l) => (&l.content.view, &*self.rect),
+            _ => panic!("ouch"),
+        }
+    }
+}
 
 pub struct Window {
     pub view: Pin<Box<View>>,
@@ -36,6 +50,7 @@ impl WindowManager {
     pub fn new() -> WindowManager {
         let ws = Workspace {
             root: tree::create_root(),
+            // TODO: just use node dimensions
             rect: Rect {
                 x: 0.0,
                 y: 0.0,
@@ -51,25 +66,25 @@ impl WindowManager {
         }
     }
 
+    pub fn find_view<'a>(&'a self, id: NodeId) -> Option<ViewRef<'a>> {
+        self.view_nodes.get(&id)
+            .map(|node| ViewRef {
+                n: node.n.borrow(), // n MUST be Leaf. If not, will crash later
+                rect: node.rect.borrow(),
+            })
+    }
+
     // TODO ren
-    pub fn views_for_render<'a>(&'a self, _output: OutputId) -> impl Iterator<Item = WindowRef> {
+    pub fn views_for_render<'a>(&'a self, _output: OutputId) -> impl Iterator<Item = ViewRef<'a>> {
         // TODO check output
         self.mru_view.iter().map(|id| {
-            self.view_nodes
-                .get(id)
-                .expect("Node id is not in views")
-                .as_content()
-                .expect("View node is not a view")
+            self.find_view(*id).expect("View not there where it should be")
         })
     }
 
-    pub fn views_for_finding<'a>(&'a self) -> impl Iterator<Item = WindowRef> {
+    pub fn views_for_finding<'a>(&'a self) ->  impl Iterator<Item = ViewRef<'a>> {
         self.mru_view.iter().rev().map(|id| {
-            self.view_nodes
-                .get(id)
-                .expect("Node id is not in views")
-                .as_content()
-                .expect("View node is not a view")
+            self.find_view(*id).expect("View not there where it should be")
         })
     }
 
@@ -88,13 +103,16 @@ impl WindowManager {
         self.mru_view.remove(mru_idx);
     }
 
-    pub fn add_view(&mut self, create_view: impl FnOnce(NodeId) -> Pin<Box<View>>) -> NodeId {
-        let active_node = match self.mru_view.last() {
-            Some(idx) => self.view_nodes.get(idx).unwrap().clone(),
-            None => self.workspaces[0].root.clone(),
-        };
+    pub fn active_node(&self) -> Option<Rc<Node>> {
+        self.mru_view.last()
+            .and_then(|x| self.view_nodes.get(x))
+            .cloned()
+    }
 
-        let workspace = active_node.as_content().map(|v| v.workspace).unwrap_or(0);
+    pub fn add_view(&mut self, create_view: impl FnOnce(NodeId) -> Pin<Box<View>>) -> NodeId {
+        let active_node = self.active_node().unwrap_or_else(|| self.workspaces[0].root.clone());
+
+        let workspace = 0;
 
         let (parent, new_leaf) = tree::add_leaf(
             active_node.clone(),
@@ -119,7 +137,7 @@ impl WindowManager {
 
     pub fn remove_node(&mut self, id: NodeId) -> Result<()> {
         let Some((workspace, node)) =
-            self.view_nodes.get(&id).and_then(|n| n.as_content().map(|w| (w.workspace, n)))
+            self.view_nodes.get(&id).map(|n| (0, n)) // TODO workspace
             else { return Err(format!("No window for {}", id)); };
 
         self.workspaces[workspace].root = tree::remove_from_tree(node.clone())?;
@@ -133,7 +151,7 @@ impl WindowManager {
         Ok(())
     }
 
-    fn configure_views(&mut self) {
+    pub fn configure_views(&mut self) {
         println!("Start configure");
         // TODO handle workspaces
         let ws = &mut self.workspaces[0];
@@ -155,6 +173,7 @@ impl WindowManager {
             .map(|o| {
                 old_workspaces
                     .remove(&Some(o.id))
+                    .map(|w| Workspace { rect: o.rect.clone(), ..w })
                     .unwrap_or_else(|| Workspace {
                         root: tree::create_root(),
                         rect: o.rect,
@@ -162,35 +181,53 @@ impl WindowManager {
                     })
             })
             .collect();
+        self.configure_views();
     }
-}
 
-fn views_rect(node: Rc<Node>) -> Option<Rect> {
-    node.self_and_descendants()
-        .filter_map(|n| n.as_content().map(|v| v.view.rect.clone()))
-        .reduce(|a, b| Rect {
-            x: a.x.min(b.x),
-            y: a.y.min(b.y),
-            w: a.w.max(b.w),
-            h: a.h.max(b.h),
-        })
-}
-
-fn split_dir(node: Rc<Node>) -> tree::Dir {
-    if let Some(rect) = views_rect(node.clone()) {
-        if rect.h > rect.w {
-            return tree::Dir::H;
+    pub fn neighbor(&self, direction: Direction) -> Option<Rc<Node>> {
+        fn overlaps(a1: f32, l1: f32, a2: f32, l2: f32) -> bool {
+            // TODO gaps?
+            dbg!(a1, a2, l1, l2);
+            a1 + l1 >= a2 && a2 + l2 >= a1 
         }
+
+        let active = self.active_node()?;
+        let active_rect = active.rect.borrow();
+        let potential_neighbors = tree::nodes_to_direction(&active, direction);
+
+        let n = self.mru_view.iter().rev()
+            .filter_map(|nodeid| potential_neighbors.get(nodeid))
+            .find(|node| {
+                let r = node.rect.borrow();
+                if direction == Direction::Up || direction == Direction::Down {
+                    overlaps(r.x, r.w, active_rect.x, active_rect.w)
+                } else {
+                    overlaps(r.y, r.h, active_rect.y, active_rect.h)
+                }
+            })
+            .cloned();
+        dbg!(n.is_some());
+        n
     }
-    tree::Dir::V
+}
+
+fn split_dir(node: Rc<Node>) -> tree::SplitDir {
+    if node.rect.borrow().h > node.rect.borrow().w {
+        tree::SplitDir::H
+    } else {
+        tree::SplitDir::V
+    }
 }
 
 fn configure_views(root: Rc<Node>, rect: Rect) {
-    use tree::Dir;
+    use tree::SplitDir;
+
+    *root.rect.borrow_mut() = rect.clone();
+
     match &mut *root.n.borrow_mut() {
         tree::N::Placeholder => {}
         tree::N::Split(s) => match s.dir {
-            Dir::H => {
+            SplitDir::H => {
                 configure_views(
                     s.a.clone(),
                     Rect {
@@ -207,7 +244,7 @@ fn configure_views(root: Rc<Node>, rect: Rect) {
                     },
                 );
             }
-            Dir::V => {
+            SplitDir::V => {
                 configure_views(
                     s.a.clone(),
                     Rect {

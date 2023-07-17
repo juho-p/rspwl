@@ -8,13 +8,14 @@ use std::ptr;
 
 use wl_sys as wl;
 
+use crate::window_manager::ViewRef;
 use crate::{
-    window_manager::{WindowManager, WindowRef},
+    window_manager::WindowManager,
     wlroots_compositor::server::*,
 };
 
 use super::{server::View, wl_util::*};
-use crate::types::NodeId;
+use crate::types::Rect;
 
 pub fn run_server() {
     unsafe {
@@ -174,6 +175,7 @@ fn new_output(server: &mut Server, wlr_output: &mut wl::wlr_output, _: ()) {
         damage,
         damage_frame: new_wl_listener(Some(damage_handle_frame)),
         destroy: Listener::new(output_destroy, id),
+        size: (wlr_output.width, wlr_output.height),
 
         _pin: PhantomPinned,
     });
@@ -198,7 +200,7 @@ fn new_xdg_surface(server: &mut Server, xdg_surface: &mut wl::wlr_xdg_surface, _
         .add_view(|id| unsafe { View::from_xdg_toplevel_surface(id, xdg_surface) });
 
     // TODO remove this
-    invalidate_everything(server);
+    server.invalidate_everything();
 }
 
 unsafe extern "C" fn damage_handle_frame(listener: *mut wl::wl_listener, _: *mut c_void) {
@@ -225,6 +227,14 @@ unsafe extern "C" fn damage_handle_frame(listener: *mut wl::wl_listener, _: *mut
         wl::wlr_output_rollback(output.wlr_output);
     }
     wl::pixman_region32_fini(&mut damage_region);
+
+    if output.size.0 != (*output.wlr_output).width || output.size.1 != (*output.wlr_output).height {
+        // TODO: wrong place to handle this
+        output.size = ((*output.wlr_output).width, (*output.wlr_output).height);
+        std::mem::drop(output);
+        let server = &mut *server_ptr();
+        server.update_wm_outputs();
+    }
 }
 
 unsafe fn render_surface(
@@ -233,7 +243,7 @@ unsafe fn render_surface(
     sy: i32,
     server: &Server,
     output: &Output,
-    view: &View,
+    rect: &Rect,
     when: *const wl::timespec,
     output_damage: *mut wl::pixman_region32,
 ) {
@@ -250,8 +260,8 @@ unsafe fn render_surface(
         x: mut ox,
         y: mut oy,
     } = output_coords(server.output_layout, output);
-    ox += (view.rect.x + sx as f32) as f64;
-    oy += (view.rect.y + sy as f32) as f64;
+    ox += (rect.x + sx as f32) as f64;
+    oy += (rect.y + sy as f32) as f64;
 
     let sw = (*surface).current.width;
     let sh = (*surface).current.height;
@@ -373,14 +383,15 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     //let color = [0.3, 0.3, 0.3, 1.0];
     //wl::wlr_renderer_clear(renderer, color.as_ptr());
 
-    println!("BEGIN RENDER");
-    for window in server.wm.views_for_render(output.id) {
-        match &window.view.shell_surface {
+    // println!("BEGIN RENDER");
+    for x in server.wm.views_for_render(output.id) {
+        let (view, rect) = x.content_and_rect();
+        match &view.shell_surface {
             ShellView::Empty => println!("Empty view (WHY???)"),
             ShellView::Xdg(xdgview) => {
                 xdg_surface_for_each_surface(xdgview.xdgsurface.xdg_surface, |s, x, y| {
-                    println!("-surface");
-                    render_surface(s, x, y, server, output, &window.view, &now, damage);
+                    // println!("-surface");
+                    render_surface(s, x, y, server, output, rect, &now, damage);
                 })
             }
         }
@@ -392,7 +403,7 @@ unsafe fn render(output: &mut Output, damage: *mut wl::pixman_region32) {
     }
     wl::wlr_renderer_scissor(server.renderer, ptr::null_mut());
     wl::wlr_output_render_software_cursors(output.wlr_output, ptr::null_mut());
-    println!("END RENDER");
+    // println!("END RENDER");
 
     wl::wlr_renderer_end(renderer);
 }
@@ -453,14 +464,15 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
     if event.state == wl::wlr_button_state_WLR_BUTTON_RELEASED {
         // TODO release button here (resize drag, etc)
     } else {
-        let to_focus = if let Some((window, surface, _)) = find_window(server, cursor_pos(server)) {
-            let focus_toplevel = match &window.view.shell_surface {
+        let to_focus = if let Some((viewref, surface, _)) = find_window(server, cursor_pos(server)) {
+            let view = viewref.content_and_rect().0;
+            let focus_toplevel = match &view.shell_surface {
                 ShellView::Xdg(v) => Some(v.xdgsurface.xdg_surface),
                 ShellView::Empty => None,
                 // NOTE: doesn't really work for non xdg, but that's a problem for another day
             };
-            println!("clicked view {}", window.view.id);
-            let view_id = window.view.id;
+            println!("clicked view {}", view.id);
+            let view_id = view.id;
 
             focus_toplevel.map(|x| (view_id, surface, x))
         } else {
@@ -470,7 +482,7 @@ fn cursor_button(server: &mut Server, event: &mut wl::wlr_event_pointer_button, 
 
         if let Some((view_id, surface, xdgsurface)) = to_focus {
             unsafe {
-                focus_xdg(server, xdgsurface, view_id, surface);
+                server.focus_view(xdgsurface, view_id, surface);
             }
         }
     }
@@ -492,41 +504,6 @@ fn cursor_frame(server: &mut Server, _: &mut (), _: ()) {
     unsafe {
         wl::wlr_seat_pointer_notify_frame(server.seat);
     }
-}
-
-unsafe fn focus_xdg(
-    server: &mut Server,
-    xdg_surface: *mut wl::wlr_xdg_surface,
-    view_id: NodeId,
-    surface: *mut wl::wlr_surface,
-) {
-    // We have mut ref to server and ref to view. breaks borrow checker. hope Rust won't mind
-    let prev_surface = (*server.seat).keyboard_state.focused_surface;
-    println!("set focus {:?}", prev_surface);
-    if prev_surface == surface {
-        return;
-    }
-    if !prev_surface.is_null() && wl::wlr_surface_is_xdg_surface(prev_surface) {
-        let prev = wl::wlr_xdg_surface_from_wlr_surface(prev_surface);
-        if !prev.is_null() {
-            wl::wlr_xdg_toplevel_set_activated(prev, false);
-        }
-    } else {
-        println!("  prev was not xdg surface");
-    }
-
-    let keyboard = &mut *wl::wlr_seat_get_keyboard(server.seat);
-
-    wl::wlr_xdg_toplevel_set_activated(xdg_surface, true);
-    wl::wlr_seat_keyboard_notify_enter(
-        server.seat,
-        surface,
-        keyboard.keycodes.as_mut_ptr(),
-        keyboard.num_keycodes,
-        &mut keyboard.modifiers,
-    );
-
-    server.wm.touch_node(view_id);
 }
 
 fn handle_new_input(server: &mut Server, device: &mut wl::wlr_input_device, _: ()) {
@@ -680,32 +657,27 @@ fn handle_key(server: &mut Server, event: &mut wl::wlr_event_keyboard_key, id: u
 fn find_window<'a>(
     server: &'a Server,
     pos: Point,
-) -> Option<(WindowRef, *mut wl::wlr_surface, Point)> {
+) -> Option<(ViewRef<'a>, *mut wl::wlr_surface, Point)> {
     let mut views = server.wm.views_for_finding();
 
-    views.find_map(|content| match &content.view.shell_surface {
-        ShellView::Xdg(xdgview) => {
-            let xdg_surface = xdgview.xdgsurface.xdg_surface;
-            let sx = pos.x - content.view.rect.x as f64;
-            let sy = pos.y - content.view.rect.y as f64;
-            let mut sub = Point { x: 0.0, y: 0.0 };
-            let surface = unsafe {
-                wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
-            };
-            if surface.is_null() {
-                None
-            } else {
-                Some((content, surface, sub))
+    views.find_map(|x| {
+        let (view, rect) = x.content_and_rect();
+        match &view.shell_surface {
+            ShellView::Xdg(xdgview) => {
+                let xdg_surface = xdgview.xdgsurface.xdg_surface;
+                let sx = pos.x - rect.x as f64;
+                let sy = pos.y - rect.y as f64;
+                let mut sub = Point { x: 0.0, y: 0.0 };
+                let surface = unsafe {
+                    wl::wlr_xdg_surface_surface_at(xdg_surface, sx, sy, &mut sub.x, &mut sub.y)
+                };
+                if surface.is_null() {
+                    None
+                } else {
+                    Some((x, surface, sub))
+                }
             }
+            ShellView::Empty => None,
         }
-        ShellView::Empty => None,
     })
-}
-
-fn invalidate_everything(server: &Server) {
-    for output in server.outputs.iter() {
-        unsafe {
-            wl::wlr_output_damage_add_whole(output.damage);
-        }
-    }
 }

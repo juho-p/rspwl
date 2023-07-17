@@ -48,7 +48,7 @@ pub fn xdg_surface_for_each_surface<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()>
     struct IterData<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()> {
         f: F,
     }
-    unsafe extern "C" fn do_damage<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()>(
+    unsafe extern "C" fn do_f<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()>(
         surface: *mut wl::wlr_surface,
         sx: c_int,
         sy: c_int,
@@ -61,7 +61,7 @@ pub fn xdg_surface_for_each_surface<F: Fn(&mut wl::wlr_surface, i32, i32) -> ()>
     unsafe {
         wl::wlr_xdg_surface_for_each_surface(
             xdg_surface,
-            Some(do_damage::<F>),
+            Some(do_f::<F>),
             &mut data as *mut IterData<F> as *mut c_void,
         );
     }
